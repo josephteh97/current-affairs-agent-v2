@@ -1,0 +1,10 @@
+# ── ARIA Agent — Python dependencies ─────────────────────────────────────────
+# Install with:  pip install -r requirements.txt
+
+# Web search (DuckDuckGo)
+ddgs>=6.3.7                  # primary package (renamed from duckduckgo-search)
+duckduckgo-search>=6.3.7     # fallback alias — agent.py tries ddgs first, then this
+
+# MCP server (mcp.py)
+fastmcp>=2.0.0               # FastMCP framework for the tool server
+mcp>=1.0.0                   # base MCP protocol library (fastmcp dependency)

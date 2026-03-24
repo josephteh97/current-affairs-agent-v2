@@ -2,7 +2,7 @@
 MCP agent tools server
 Exposes: web_search, web_fetch, write_essay, remember_context,
          rate_source, get_best_sources, log_writing_feedback, recall_writing_feedback
-Run: python mcp.py
+Run: ./run.sh mcp   OR   python mcp_agent_server.py
 """
 
 import os
