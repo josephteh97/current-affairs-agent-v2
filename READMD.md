@@ -48,4 +48,93 @@ On file organization:
   - All data is in one file (agent_memory.db) that persists and grows with every session                
                                                                                                                                                                                                                  
   Future path to vector search: self_learning.md documents exactly how to upgrade — the schema already has content_snippet which is what you'd embed. No migration needed, just add ChromaDB and point it at the 
-  existing rows.                                                                                              
+  existing rows.    
+
+
+  flowchart TB                                                                                                                                                                                                   
+      %% ── Entry Points ──────────────────────────────────────────────                                                                                                                                          
+      CLI["👤 CLI User\n(terminal)"]                                                                                                                                                                             
+      MCP_CLIENT["🖥️  MCP Client\n(Claude Desktop, etc.)"]                                                                                                                                                        
+                                                                                                                                                                                                                 
+      %% ── Two Runtime Paths ─────────────────────────────────────────                                                                                                                                          
+      subgraph AGENT["agent.py  —  Standalone ReAct Agent"]                                                                                                                                                      
+          direction TB                                                                                                                                                                                           
+          A1["Intent Detection\nis_essay_request()\nneeds_live_search()"]                                                                                                                                        
+          A2["Forced web_search\n(current-events bypass)"]                                                                                                                                                       
+          A3["build_system_prompt()\nskills + memory + rules"]                                                                                                                                                   
+          A4["Ollama LLM\nllama3.1:8b  /  localhost:11434"]                                                                                                                                                      
+          A5["ReAct Parser\nTHOUGHT → ACTION → OBSERVATION"]                                                                                                                                                     
+          A6["evaluate_turn()\nabsorb_lessons()"]                                                                                                                                                                
+          A1 --> A2 --> A3 --> A4                                                                                                                                                                                
+          A4 --> A5 --> A4                                                                                                                                                                                       
+          A5 --> A6                                                                                                                                                                                              
+      end                                                                                                                                                                                                      
+                                                                                                                                                                                                                 
+      subgraph MCP["mcp_agent_server.py  —  MCP Tool Server"]                                                                                                                                                    
+          direction TB
+          M1["FastMCP\nmcp.tool() registration"]                                                                                                                                                                 
+          M2["remember_context()\nMCP-only key-value store\n(memory.md)"]                                                                                                                                        
+          M1 --- M2                                                                                                                                                                                              
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      %% ── Shared Tool Layer ─────────────────────────────────────────                                                                                                                                          
+      subgraph TOOLS["tools.py  —  Single Source of Truth"]                                                                                                                                                    
+          direction LR                                                                                                                                                                                           
+          T1["web_search()\nDDGS.news() → .text() fallback"]
+          T2["web_fetch()\nHTML strip, 8 000 char cap"]                                                                                                                                                          
+          T3["write_essay()\nthink-tank scaffold"]                                                                                                                                                               
+          T4["rate_source()\nget_best_sources()"]                                                                                                                                                                
+          T5["log_writing_feedback()\nrecall_writing_feedback()"]                                                                                                                                                
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                               
+      %% ── Skills (Prompt Context) ───────────────────────────────────                                                                                                                                          
+      subgraph SKILLS["skills/  —  Loaded into System Prompt"]                                                                                                                                                 
+          direction TB                                                                                                                                                                                           
+          S1["news_search.md\nalways loaded"]                                                                                                                                                                  
+          S2["self_learning.md\nalways loaded"]                                                                                                                                                                  
+          S3["essay_writing.md\nessay_mode only"]
+      end                                                                                                                                                                                                        
+                  
+      %% ── External Services ─────────────────────────────────────────                                                                                                                                          
+      DDG["🌐 DuckDuckGo\nSearch API"]
+      WEB["🌐 External URLs\n(Reuters, BBC, WSJ…)"]                                                                                                                                                              
+                                                                                                                                                                                                                 
+      %% ── Persistence ───────────────────────────────────────────────                                                                                                                                          
+      subgraph MEMORY["Persistence"]                                                                                                                                                                             
+          direction TB                                                                                                                                                                                           
+          DB[("agent_memory.db\nSQLite\n─────────────\nsource_quality\nwriting_feedback")]
+          JSON[("agent_memory.json\nRL Heuristic\n─────────────\nlearned_rules\nstats / episodes")]                                                                                                              
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      %% ── Connections ───────────────────────────────────────────────                                                                                                                                          
+      CLI      --> AGENT
+      MCP_CLIENT --> MCP                                                                                                                                                                                         
+                  
+      AGENT   -->|"imports"| TOOLS                                                                                                                                                                               
+      MCP     -->|"imports"| TOOLS
+                                                                                                                                                                                                                 
+      AGENT   -->|"reads on startup\n& each turn"| SKILLS                                                                                                                                                        
+      AGENT   -->|"load_memory()\nsave_memory()"| JSON
+                                                                                                                                                                                                                 
+      T1      --> DDG                                                                                                                                                                                            
+      T2      --> WEB
+      T4      --> DB                                                                                                                                                                                             
+      T5      --> DB
+
+
+
+  ┌─────────────┬─────────────────────────────────────┬──────────────────────────────────────────────────────────────────┐
+  │    Layer    │                Files                │                               Role                               │                                                                                       
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+  │ Entry       │ CLI / MCP Client                    │ Two ways to reach the system                                     │                                                                                       
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤
+  │ Agents      │ agent.py / mcp_agent_server.py      │ Runtime logic — import tools, never redefine them                │                                                                                       
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤                                                                                       
+  │ Tools       │ tools.py                            │ Single source of truth — fix once, both agents benefit           │                                                                                       
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤                                                                                       
+  │ Skills      │ skills/*.md                         │ Prompt-injected playbooks; essay_writing.md loaded conditionally │
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤                                                                                       
+  │ Persistence │ agent_memory.db + agent_memory.json │ SQLite for source/writing quality; JSON for RL heuristic rules   │
+  ├─────────────┼─────────────────────────────────────┼──────────────────────────────────────────────────────────────────┤                                                                                       
+  │ External    │ DuckDuckGo + web URLs               │ Live data; never baked into the model                            │
+  └─────────────┴─────────────────────────────────────┴──────────────────────────────────────────────────────────────────┘    

@@ -232,18 +232,12 @@ def absorb_lessons(lessons: list, mem: dict):
 
 # ── System Prompt ─────────────────────────────────────────────────────────────
 
-_skills_cache: str = ""
-
-
 def _load_skills(essay_mode: bool = False) -> str:
     """
     Load skill files from skills/ directory.
-    Loads only relevant files to keep the system prompt lean for small models:
-      - Always: news_search.md, self_learning.md
-      - Essay mode only: essay_writing.md
-    Results are cached after the first load.
+    Always loads: news_search.md, self_learning.md
+    Essay mode only: essay_writing.md (keeps context lean for small models)
     """
-    global _skills_cache
     if not SKILLS_DIR.exists():
         return ""
 
@@ -443,33 +437,27 @@ def run_agent_turn(
         search_results = web_search(auto_query, num_results=6, mode="auto")
         tools_used.append("web_search")
 
+        search_block = f"[LIVE WEB SEARCH RESULTS — fetched automatically]\n{search_results}\n[END SEARCH RESULTS]\n\n"
         if essay_mode:
             pre_context = (
-                f"[LIVE WEB SEARCH RESULTS — fetched automatically]\n"
-                f"{search_results}\n"
-                f"[END SEARCH RESULTS]\n\n"
-                f"The user has explicitly requested an essay or analysis. "
-                f"Use the search results above as your evidence base, then call write_essay() "
-                f"with a clear thesis and structured arguments. Cite sources inline."
+                search_block +
+                "The user has explicitly requested an essay or analysis. "
+                "Use the search results above as your evidence base, then call write_essay() "
+                "with a clear thesis and structured arguments. Cite sources inline."
             )
         else:
             pre_context = (
-                f"[LIVE WEB SEARCH RESULTS — fetched automatically for this current-events query]\n"
-                f"{search_results}\n"
-                f"[END SEARCH RESULTS]\n\n"
-                f"Answer the user's question using ONLY the search results above. "
-                f"Summarise and cite sources (title + URL) for every key claim. "
-                f"Do NOT call write_essay — this is a search query, not an essay request. "
-                f"If the results don't answer the question, say so honestly."
+                search_block +
+                "Answer the user's question using ONLY the search results above. "
+                "Summarise and cite sources (title + URL) for every key claim. "
+                "Do NOT call write_essay — this is a search query, not an essay request. "
+                "If the results don't answer the question, say so honestly."
             )
 
     # ── Step 2: Rebuild system prompt with context-appropriate skills ─────────
     # Update the system message to include/exclude essay skills based on intent
     if conversation and conversation[0]["role"] == "system":
-        conversation[0]["content"] = build_system_prompt(
-            json.loads(MEMORY_FILE.read_text()) if MEMORY_FILE.exists() else load_memory(),
-            essay_mode=essay_mode,
-        )
+        conversation[0]["content"] = build_system_prompt(load_memory(), essay_mode=essay_mode)
 
     # ── Step 3: Build messages and enter ReAct loop ───────────────────────────
     augmented_input = (pre_context + "User question: " + user_input) if pre_context else user_input
