@@ -1,0 +1,248 @@
+flowchart TB                                                                                                                                                                                                   
+      CLI["CLI User\nterminal"]
+      MCP_CLIENT["MCP Client\nClaude Desktop etc"]                                                                                                                                                               
+                  
+      subgraph AGENT
+          AGENT_TITLE["agent.py — Standalone ReAct Agent"]
+          A1["Intent Detection\nis_essay_request\nneeds_live_search"]                                                                                                                                            
+          A2["Forced web_search\ncurrent-events bypass"]
+          A3["build_system_prompt\nskills + memory + rules"]                                                                                                                                                     
+          A4["Ollama LLM\nllama3.1:8b"]
+          A5["ReAct Parser\nTHOUGHT › ACTION › OBSERVATION"]                                                                                                                                                     
+          A6["evaluate_turn\nabsorb_lessons"]                                                                                                                                                                    
+          A1 --> A2 --> A3 --> A4
+          A4 --> A5 --> A4                                                                                                                                                                                       
+          A5 --> A6                                                                                                                                                                                              
+      end
+                                                                                                                                                                                                                 
+      subgraph MCP
+          MCP_TITLE["mcp_agent_server.py — MCP Tool Server"]
+          M1["FastMCP\nmcp.tool registration"]
+          M2["remember_context\nMCP-only, memory.md"]                                                                                                                                                            
+          M1 --- M2
+      end                                                                                                                                                                                                        
+                  
+      subgraph TOOLS
+          TOOLS_TITLE["tools.py — Single Source of Truth"]
+          T1["web_search\nDDGS.news then .text fallback"]                                                                                                                                                        
+          T2["web_fetch\nHTML strip, 8000 char cap"]
+          T3["write_essay\nthink-tank scaffold"]                                                                                                                                                                 
+          T4["rate_source\nget_best_sources"]                                                                                                                                                                    
+          T5["log_writing_feedback\nrecall_writing_feedback"]
+      end                                                                                                                                                                                                        
+                  
+      subgraph SKILLS                                                                                                                                                                                            
+          SKILLS_TITLE["skills/ — Injected into System Prompt"]
+          S1["news_search.md\nalways loaded"]                                                                                                                                                                    
+          S2["self_learning.md\nalways loaded"]
+          S3["essay_writing.md\nessay mode only"]                                                                                                                                                                
+      end
+                                                                                                                                                                                                                 
+      subgraph MEMORY
+          MEMORY_TITLE["Persistence"]
+          DB[("agent_memory.db\nSQLite\nsource_quality\nwriting_feedback")]
+          JSON[("agent_memory.json\nRL Heuristic\nlearned_rules, stats")]                                                                                                                                        
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      DDG["DuckDuckGo\nSearch API"]                                                                                                                                                                              
+      WEB["External URLs\nReuters, BBC, WSJ..."]
+
+      CLI --> AGENT
+      MCP_CLIENT --> MCP
+
+      AGENT -->|imports| TOOLS                                                                                                                                                                                   
+      MCP -->|imports| TOOLS
+                                                                                                                                                                                                                 
+      AGENT -->|reads each turn| SKILLS
+      AGENT -->|load_memory / save_memory| JSON
+
+      T1 --> DDG                                                                                                                                                                                                 
+      T2 --> WEB
+      T4 --> DB                                                                                                                                                                                                  
+      T5 --> DB   
+flowchart TB                                                                                                                                                                                                   
+      CLI["CLI User\nterminal"]
+      MCP_CLIENT["MCP Client\nClaude Desktop etc"]                                                                                                                                                               
+                  
+      subgraph AGENT
+          AGENT_TITLE["agent.py — Standalone ReAct Agent"]
+          A1["Intent Detection\nis_essay_request\nneeds_live_search"]                                                                                                                                            
+          A2["Forced web_search\ncurrent-events bypass"]
+          A3["build_system_prompt\nskills + memory + rules"]                                                                                                                                                     
+          A4["Ollama LLM\nllama3.1:8b"]
+          A5["ReAct Parser\nTHOUGHT › ACTION › OBSERVATION"]                                                                                                                                                     
+          A6["evaluate_turn\nabsorb_lessons"]                                                                                                                                                                    
+          A1 --> A2 --> A3 --> A4
+          A4 --> A5 --> A4                                                                                                                                                                                       
+          A5 --> A6                                                                                                                                                                                              
+      end
+                                                                                                                                                                                                                 
+      subgraph MCP
+          MCP_TITLE["mcp_agent_server.py — MCP Tool Server"]
+          M1["FastMCP\nmcp.tool registration"]
+          M2["remember_context\nMCP-only, memory.md"]                                                                                                                                                            
+          M1 --- M2
+      end                                                                                                                                                                                                        
+                  
+      subgraph TOOLS
+          TOOLS_TITLE["tools.py — Single Source of Truth"]
+          T1["web_search\nDDGS.news then .text fallback"]                                                                                                                                                        
+          T2["web_fetch\nHTML strip, 8000 char cap"]
+          T3["write_essay\nthink-tank scaffold"]                                                                                                                                                                 
+          T4["rate_source\nget_best_sources"]                                                                                                                                                                    
+          T5["log_writing_feedback\nrecall_writing_feedback"]
+      end                                                                                                                                                                                                        
+                  
+      subgraph SKILLS                                                                                                                                                                                            
+          SKILLS_TITLE["skills/ — Injected into System Prompt"]
+          S1["news_search.md\nalways loaded"]                                                                                                                                                                    
+          S2["self_learning.md\nalways loaded"]
+          S3["essay_writing.md\nessay mode only"]                                                                                                                                                                
+      end
+                                                                                                                                                                                                                 
+      subgraph MEMORY
+          MEMORY_TITLE["Persistence"]
+          DB[("agent_memory.db\nSQLite\nsource_quality\nwriting_feedback")]
+          JSON[("agent_memory.json\nRL Heuristic\nlearned_rules, stats")]                                                                                                                                        
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      DDG["DuckDuckGo\nSearch API"]                                                                                                                                                                              
+      WEB["External URLs\nReuters, BBC, WSJ..."]
+
+      CLI --> AGENT
+      MCP_CLIENT --> MCP
+
+      AGENT -->|imports| TOOLS                                                                                                                                                                                   
+      MCP -->|imports| TOOLS
+                                                                                                                                                                                                                 
+      AGENT -->|reads each turn| SKILLS
+      AGENT -->|load_memory / save_memory| JSON
+
+      T1 --> DDG                                                                                                                                                                                                 
+      T2 --> WEB
+      T4 --> DB                                                                                                                                                                                                  
+      T5 --> DB   
+flowchart TB                                                                                                                                                                                                   
+      CLI["CLI User\nterminal"]
+      MCP_CLIENT["MCP Client\nClaude Desktop etc"]                                                                                                                                                               
+                  
+      subgraph AGENT
+          AGENT_TITLE["agent.py — Standalone ReAct Agent"]
+          A1["Intent Detection\nis_essay_request\nneeds_live_search"]                                                                                                                                            
+          A2["Forced web_search\ncurrent-events bypass"]
+          A3["build_system_prompt\nskills + memory + rules"]                                                                                                                                                     
+          A4["Ollama LLM\nllama3.1:8b"]
+          A5["ReAct Parser\nTHOUGHT › ACTION › OBSERVATION"]                                                                                                                                                     
+          A6["evaluate_turn\nabsorb_lessons"]                                                                                                                                                                    
+          A1 --> A2 --> A3 --> A4
+          A4 --> A5 --> A4                                                                                                                                                                                       
+          A5 --> A6                                                                                                                                                                                              
+      end
+                                                                                                                                                                                                                 
+      subgraph MCP
+          MCP_TITLE["mcp_agent_server.py — MCP Tool Server"]
+          M1["FastMCP\nmcp.tool registration"]
+          M2["remember_context\nMCP-only, memory.md"]                                                                                                                                                            
+          M1 --- M2
+      end                                                                                                                                                                                                        
+                  
+      subgraph TOOLS
+          TOOLS_TITLE["tools.py — Single Source of Truth"]
+          T1["web_search\nDDGS.news then .text fallback"]                                                                                                                                                        
+          T2["web_fetch\nHTML strip, 8000 char cap"]
+          T3["write_essay\nthink-tank scaffold"]                                                                                                                                                                 
+          T4["rate_source\nget_best_sources"]                                                                                                                                                                    
+          T5["log_writing_feedback\nrecall_writing_feedback"]
+      end                                                                                                                                                                                                        
+                  
+      subgraph SKILLS                                                                                                                                                                                            
+          SKILLS_TITLE["skills/ — Injected into System Prompt"]
+          S1["news_search.md\nalways loaded"]                                                                                                                                                                    
+          S2["self_learning.md\nalways loaded"]
+          S3["essay_writing.md\nessay mode only"]                                                                                                                                                                
+      end
+                                                                                                                                                                                                                 
+      subgraph MEMORY
+          MEMORY_TITLE["Persistence"]
+          DB[("agent_memory.db\nSQLite\nsource_quality\nwriting_feedback")]
+          JSON[("agent_memory.json\nRL Heuristic\nlearned_rules, stats")]                                                                                                                                        
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      DDG["DuckDuckGo\nSearch API"]                                                                                                                                                                              
+      WEB["External URLs\nReuters, BBC, WSJ..."]
+
+      CLI --> AGENT
+      MCP_CLIENT --> MCP
+
+      AGENT -->|imports| TOOLS                                                                                                                                                                                   
+      MCP -->|imports| TOOLS
+                                                                                                                                                                                                                 
+      AGENT -->|reads each turn| SKILLS
+      AGENT -->|load_memory / save_memory| JSON
+
+      T1 --> DDG                                                                                                                                                                                                 
+      T2 --> WEB
+      T4 --> DB                                                                                                                                                                                                  
+      T5 --> DB   
+flowchart TB                                                                                                                                                                                                   
+      CLI["CLI User\nterminal"]
+      MCP_CLIENT["MCP Client\nClaude Desktop etc"]                                                                                                                                                               
+                  
+      subgraph AGENT
+          AGENT_TITLE["agent.py — Standalone ReAct Agent"]
+          A1["Intent Detection\nis_essay_request\nneeds_live_search"]                                                                                                                                            
+          A2["Forced web_search\ncurrent-events bypass"]
+          A3["build_system_prompt\nskills + memory + rules"]                                                                                                                                                     
+          A4["Ollama LLM\nllama3.1:8b"]
+          A5["ReAct Parser\nTHOUGHT › ACTION › OBSERVATION"]                                                                                                                                                     
+          A6["evaluate_turn\nabsorb_lessons"]                                                                                                                                                                    
+          A1 --> A2 --> A3 --> A4
+          A4 --> A5 --> A4                                                                                                                                                                                       
+          A5 --> A6                                                                                                                                                                                              
+      end
+                                                                                                                                                                                                                 
+      subgraph MCP
+          MCP_TITLE["mcp_agent_server.py — MCP Tool Server"]
+          M1["FastMCP\nmcp.tool registration"]
+          M2["remember_context\nMCP-only, memory.md"]                                                                                                                                                            
+          M1 --- M2
+      end                                                                                                                                                                                                        
+                  
+      subgraph TOOLS
+          TOOLS_TITLE["tools.py — Single Source of Truth"]
+          T1["web_search\nDDGS.news then .text fallback"]                                                                                                                                                        
+          T2["web_fetch\nHTML strip, 8000 char cap"]
+          T3["write_essay\nthink-tank scaffold"]                                                                                                                                                                 
+          T4["rate_source\nget_best_sources"]                                                                                                                                                                    
+          T5["log_writing_feedback\nrecall_writing_feedback"]
+      end                                                                                                                                                                                                        
+                  
+      subgraph SKILLS                                                                                                                                                                                            
+          SKILLS_TITLE["skills/ — Injected into System Prompt"]
+          S1["news_search.md\nalways loaded"]                                                                                                                                                                    
+          S2["self_learning.md\nalways loaded"]
+          S3["essay_writing.md\nessay mode only"]                                                                                                                                                                
+      end
+                                                                                                                                                                                                                 
+      subgraph MEMORY
+          MEMORY_TITLE["Persistence"]
+          DB[("agent_memory.db\nSQLite\nsource_quality\nwriting_feedback")]
+          JSON[("agent_memory.json\nRL Heuristic\nlearned_rules, stats")]                                                                                                                                        
+      end                                                                                                                                                                                                        
+                                                                                                                                                                                                                 
+      DDG["DuckDuckGo\nSearch API"]                                                                                                                                                                              
+      WEB["External URLs\nReuters, BBC, WSJ..."]
+
+      CLI --> AGENT
+      MCP_CLIENT --> MCP
+
+      AGENT -->|imports| TOOLS                                                                                                                                                                                   
+      MCP -->|imports| TOOLS
+                                                                                                                                                                                                                 
+      AGENT -->|reads each turn| SKILLS
+      AGENT -->|load_memory / save_memory| JSON
+
+      T1 --> DDG                                                                                                                                                                                                 
+      T2 --> WEB
+      T4 --> DB                                                                                                                                                                                                  
+      T5 --> DB   

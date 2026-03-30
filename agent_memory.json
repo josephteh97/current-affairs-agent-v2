@@ -3,8 +3,8 @@
     "LESSON: Admitting uncertainty is correct behaviour \u2014 keep doing this."
   ],
   "stats": {
-    "turns": 4,
-    "searches_done": 3,
+    "turns": 5,
+    "searches_done": 4,
     "hallucinations_caught": 0,
     "honest_admits": 1
   },
