@@ -86,21 +86,133 @@ def web_search(query: str, num_results: int = 10, mode: str = "auto") -> str:
         return f"Search error: {e}"
 
 
+# ── web_fetch network policy (see SECURITY.md §3) ────────────────────────────
+#
+# Defence: the IP check runs inside the socket connect step, not before the
+# request. That way (a) every redirect hop is checked automatically, and
+# (b) DNS rebinding can't swap a public IP for 127.0.0.1 between check and use,
+# because we connect to the exact IP we validated.
+
+import http.client
+import ipaddress
+import socket
+import urllib.parse
+import urllib.request
+
+_ALLOWED_SCHEMES = {"http", "https"}
+_ALLOWED_PORTS = {80, 443}
+_MAX_BYTES = 2_000_000
+_MAX_REDIRECTS = 5
+
+
+class BlockedURL(Exception):
+    """Raised when a URL or connection violates the web_fetch network policy."""
+
+
+def _check_scheme_and_port(url: str) -> None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() not in _ALLOWED_SCHEMES:
+        raise BlockedURL(f"scheme '{parts.scheme}' not allowed")
+    if not parts.hostname:
+        raise BlockedURL("no hostname")
+    try:
+        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+    except ValueError:
+        raise BlockedURL("invalid port")
+    if port not in _ALLOWED_PORTS:
+        raise BlockedURL(f"port {port} not allowed")
+
+
+def _is_public(ip: ipaddress._BaseAddress) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped                      # ::ffff:127.0.0.1 → 127.0.0.1
+    return ip.is_global and not ip.is_multicast  # excludes loopback/private/link-local/reserved
+
+
+def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                            source_address=None, *args, **kwargs):
+    """Drop-in for socket.create_connection that refuses non-public IPs."""
+    host, port = address
+    if port not in _ALLOWED_PORTS:
+        raise BlockedURL(f"port {port} not allowed")
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise BlockedURL(f"cannot resolve {host}: {e}")
+    ips = [ipaddress.ip_address(info[4][0].split("%")[0]) for info in infos]
+    bad = [str(ip) for ip in ips if not _is_public(ip)]
+    if bad:  # any non-public answer → refuse the host entirely
+        raise BlockedURL(f"{host} resolves to non-public address {bad[0]}")
+    # Connect to the IP we just validated — never re-resolve the name.
+    return socket.create_connection((str(ips[0]), port), timeout, source_address)
+
+
+class _SafeHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _safe_create_connection
+
+
+class _SafeHTTPSConnection(http.client.HTTPSConnection):
+    # TLS still verifies the certificate against the original hostname.
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _safe_create_connection
+
+
+class _SafeHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_SafeHTTPConnection, req)
+
+
+class _SafeHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_SafeHTTPSConnection, req, context=self._context)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    max_redirections = _MAX_REDIRECTS
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        location = headers.get("location") or headers.get("uri")
+        if location:  # check before urllib's own handling, so refusals are uniform
+            _check_scheme_and_port(urllib.parse.urljoin(req.full_url, location))
+        return super().http_error_302(req, fp, code, msg, headers)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+    # (the IP of the redirect target is checked again at connect time)
+
+
+def _build_safe_opener() -> urllib.request.OpenerDirector:
+    # Built by hand instead of build_opener(): no FileHandler, FTPHandler,
+    # DataHandler, and no ProxyHandler (an env proxy would bypass the IP check).
+    opener = urllib.request.OpenerDirector()
+    for h in (_SafeHTTPHandler(), _SafeHTTPSHandler(), _SafeRedirectHandler(),
+              urllib.request.HTTPDefaultErrorHandler(),
+              urllib.request.HTTPErrorProcessor()):
+        opener.add_handler(h)
+    return opener
+
+
+_SAFE_OPENER = _build_safe_opener()
+
+
 def web_fetch(url: str, timeout: int = 15) -> str:
     """Fetch the full text of a news article by URL.
     Use after web_search to read the complete article from a news outlet.
+    Only public http/https pages on ports 80/443 are allowed.
     """
     try:
-        import urllib.request
         import html as _html
 
+        _check_scheme_and_port(url)
         headers = {"User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )}
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        with _SAFE_OPENER.open(req, timeout=timeout) as resp:
+            raw = resp.read(_MAX_BYTES).decode("utf-8", errors="replace")
 
         raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.DOTALL | re.IGNORECASE)
         title_m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
@@ -112,6 +224,8 @@ def web_fetch(url: str, timeout: int = 15) -> str:
         if len(text) > 8000:
             text = text[:8000] + "\n\n[... truncated ...]"
         return f"Title: {title}\nURL: {url}\n\n{text}"
+    except BlockedURL as e:
+        return f"Blocked by security policy: {e}"
     except Exception as e:
         return f"Fetch error for {url}: {e}"
 

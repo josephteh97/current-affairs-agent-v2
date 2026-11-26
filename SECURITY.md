@@ -16,7 +16,7 @@ or plugin may be added without updating this table and review.
 | Tool | Risk tier | Side effects | Status |
 |---|---|---|---|
 | `web_search` | network | Outbound query to DuckDuckGo | ✅ |
-| `web_fetch` | network | Outbound HTTP GET to one URL | ❌ see G1 |
+| `web_fetch` | network | Outbound HTTP GET to one URL | ✅ |
 | `write_essay` | none | Returns a text scaffold | ✅ |
 | `get_best_sources` | read | Reads `agent_memory.db` | ✅ |
 | `recall_writing_feedback` | read | Reads `agent_memory.db` | ✅ |
@@ -42,7 +42,7 @@ chosen by code, never by a model-supplied argument:
 | `skills/*.md` | read | Prompt playbooks |
 
 Everything else — home directory, `~/.ssh`, `.env`, credentials, system files — is out of scope.
-No tool accepts a file path as an argument. `web_fetch` must not accept `file://` URLs. ❌ see G1
+No tool accepts a file path as an argument. `web_fetch` rejects `file://` URLs. ✅
 
 ## 3. Network — what hosts can ARIA reach?
 
@@ -56,7 +56,8 @@ ARIA must reach the public web to search for news, so "no network" is not possib
 | Loopback, private (10/8, 172.16/12, 192.168/16), link-local (169.254/16, incl. cloud metadata), IPv6 equivalents | ❌ blocked | — |
 | Any other scheme (`file`, `ftp`, `gopher`, …) | ❌ blocked | — |
 
-The IP check is applied after DNS resolution and again on every redirect. Responses are capped at 2 MB. ❌ see G1
+The IP check runs at socket-connect time against the exact IP being connected to (defeats DNS rebinding),
+so every redirect hop is checked too. Environment proxies are ignored. Responses are capped at 2 MB. ✅
 
 ## 4. Untrusted content — how is it handled?
 
@@ -110,7 +111,7 @@ Review weekly, or immediately after anything unexpected: look for denied calls, 
 
 | ID | Gap | Fixed by |
 |---|---|---|
-| G1 | `web_fetch` accepts any URL, including `file://` and private IPs (verified: reads `/etc/hostname`) | Exercise 1 |
+| ~~G1~~ | ~~`web_fetch` accepts any URL, including `file://` and private IPs~~ — **fixed** (Exercise 1) | Exercise 1 ✅ |
 | G2 | Tool output is not tagged as untrusted; no provenance rule for `web_fetch` | Exercise 2 |
 | G3 | Dispatch passes `**tool_args` unchecked; no risk tiers, confirmation, or budget | Exercise 3 |
 | G4 | `remember_context` keys unvalidated; `learned_rules` persist without review | Exercise 4 |
