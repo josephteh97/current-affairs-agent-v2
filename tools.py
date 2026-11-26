@@ -8,6 +8,7 @@ import from here. Fix a bug once; both consumers get the fix.
 import html
 import http.client
 import ipaddress
+import os
 import re
 import socket
 import sqlite3
@@ -17,7 +18,11 @@ import warnings
 from contextlib import closing
 from pathlib import Path
 
-DB_PATH = str(Path(__file__).parent / "agent_memory.db")
+# All mutable state (memory, DBs, logs) lives in DATA_DIR, so the code directory
+# can be read-only (e.g. in a container). Defaults to the project folder.
+DATA_DIR = Path(os.getenv("ARIA_DATA_DIR") or Path(__file__).parent)
+AUDIT_LOG = DATA_DIR / "logs" / "audit.jsonl"
+DB_PATH = str(DATA_DIR / "agent_memory.db")
 
 # ── SQLite helpers ────────────────────────────────────────────────────────────
 
@@ -61,10 +66,7 @@ def web_search(query: str, num_results: int = 10, mode: str = "auto") -> str:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            try:
-                from ddgs import DDGS
-            except ImportError:
-                from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
         results = []
         with DDGS() as ddgs:

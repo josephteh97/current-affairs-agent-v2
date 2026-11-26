@@ -17,10 +17,16 @@ Program code that picks its own arguments (e.g. the forced search in agent.py)
 may call tools.py directly.
 """
 
+import hashlib
+import json
+import os
 import re
+import sys
 import urllib.parse
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 import tools
@@ -147,6 +153,51 @@ def wrap_untrusted(tool_name: str, text: str, tag: str = "tool_output") -> str:
     return f'<{tag} tool="{tool_name}" trusted="false">\n{text}\n</{tag}>'
 
 
+# ── Audit log (SECURITY.md §6) ────────────────────────────────────────────────
+
+_SECRET_RE = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}"          # OpenAI/Anthropic/Stripe-style keys
+    r"|\bgh[pousr]_[A-Za-z0-9]{20,}"               # GitHub tokens
+    r"|\bAKIA[0-9A-Z]{16}\b"                       # AWS access key IDs
+    r"|\b(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+",
+    re.IGNORECASE)
+
+
+def _redact(value, limit: int = 300):
+    """Mask anything that looks like a secret, and truncate, before it is logged."""
+    if isinstance(value, list):
+        return [_redact(v, limit) for v in value[:10]]
+    if not isinstance(value, str):
+        return value
+    value = _SECRET_RE.sub("[REDACTED]", value)
+    return value if len(value) <= limit else value[:limit] + "…"
+
+
+class AuditLog:
+    """Append-only JSONL log: one line per tool call decision.
+    Rotates to <name>.1 when it exceeds max_bytes. Never raises — a logging
+    failure is reported on stderr but must not crash the agent."""
+
+    def __init__(self, path, host: str, max_bytes: int = 5_000_000):
+        self.path = Path(path)
+        self.host = host
+        self.max_bytes = max_bytes
+        self.session = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}"
+
+    def write(self, **event) -> None:
+        record = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                  "session": self.session, "host": self.host, **event}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists() and self.path.stat().st_size > self.max_bytes:
+                self.path.replace(self.path.with_name(self.path.name + ".1"))
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            print(f"[audit] failed to write {self.path}: {e}", file=sys.stderr)
+
+
 class ToolGate:
     """
     confirm:    asks a human to approve a call; None means non-interactive, so
@@ -157,16 +208,39 @@ class ToolGate:
                 user's message). Off for MCP, where the server cannot see the
                 user's message and the MCP client approves each call.
     specs:      tool registry; defaults to SPECS.
+    audit:      AuditLog that records every decision; None disables logging.
     """
 
     def __init__(self, confirm: Optional[Approver], budget: Optional[dict] = DEFAULT_BUDGET,
-                 provenance: bool = True, specs: Optional[dict] = None):
+                 provenance: bool = True, specs: Optional[dict] = None,
+                 audit: Optional[AuditLog] = None):
         self.confirm = confirm
         self.budget = budget
         self.provenance = provenance
         self.specs = SPECS if specs is None else specs
+        self.audit = audit
         self.used = Counter()
         self.allowed_urls = set()
+
+    def _log(self, name: str, args, decision: str, *, risk: str = "", reason: str = "",
+             result: Optional[str] = None) -> None:
+        if self.audit is None:
+            return
+        event = {"tool": name, "risk": risk, "decision": decision,
+                 "args": {k: _redact(v) for k, v in args.items()} if isinstance(args, dict) else _redact(str(args))}
+        if reason:
+            event["reason"] = _redact(reason)
+        if result is not None:
+            event["result_len"] = len(result)
+            event["result_sha256"] = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:16]
+            if result.startswith("Blocked by security policy"):
+                event["blocked"] = _redact(result)
+        self.audit.write(**event)
+
+    def record_program_call(self, name: str, args: dict, result: str) -> None:
+        """Log a tool call made by program code (not the model), e.g. the forced search."""
+        spec = self.specs.get(name)
+        self._log(name, args, "program", risk=spec.risk if spec else "", result=result)
 
     def new_turn(self, user_text: str = "") -> None:
         self.used.clear()
@@ -177,14 +251,16 @@ class ToolGate:
         """Record URLs that may be fetched this turn (user text, search results)."""
         self.allowed_urls.update(_norm_url(u) for u in _URL_RE.findall(text or ""))
 
-    def _approve(self, name: str, clean: dict, reason: str) -> None:
+    def _approve(self, name: str, clean: dict, reason: str) -> str:
         if self.confirm is None:
             raise Denied(f"{reason}; human approval is unavailable in non-interactive mode")
         if not self.confirm(name, clean, reason):
             raise Denied(f"the user declined {name} ({reason})")
+        return reason
 
     def check(self, name: str, args) -> tuple:
-        """Return (spec, cleaned_args) or raise Denied. Approval happens last."""
+        """Return (spec, cleaned_args, approval_reasons) or raise Denied.
+        Approval happens last, so humans are only asked about valid calls."""
         spec = self.specs.get(name)
         if spec is None:
             raise Denied(f"unknown tool '{name}'. Available: {list(self.specs)}")
@@ -204,24 +280,31 @@ class ToolGate:
                 raise Denied(f"{name}.{key} {e}")
         if self.budget is not None and self.used[spec.risk] >= self.budget[spec.risk]:
             raise Denied(f"per-turn limit for {spec.risk} tools reached; answer with what you have")
+        approvals = []
         if spec.risk == "write":
-            self._approve(name, clean, f"{name} writes persistent memory")
+            approvals.append(self._approve(name, clean, f"{name} writes persistent memory"))
         if (name == "web_fetch" and self.provenance
                 and _norm_url(clean["url"]) not in self.allowed_urls):
-            self._approve(name, clean, "URL is not from this turn's search results or your message")
-        return spec, clean
+            approvals.append(self._approve(
+                name, clean, "URL is not from this turn's search results or your message"))
+        return spec, clean, approvals
 
     def call(self, name: str, args) -> tuple:
-        """Return (observation, ran). Never raises."""
+        """Return (observation, ran). Never raises. Every outcome is audited."""
+        risk = self.specs[name].risk if name in self.specs else ""
         try:
-            spec, clean = self.check(name, args)
+            spec, clean, approvals = self.check(name, args)
         except Denied as e:
+            self._log(name, args, "denied", risk=risk, reason=str(e))
             return f"Denied by policy: {e}", False
         self.used[spec.risk] += 1
+        decision = "user_approved" if approvals else "allowed"
         try:
             result = spec.fn(**clean)
         except Exception as e:
+            self._log(name, clean, "error", risk=risk, reason=f"{decision}; {e}")
             return f"Tool error: {e}", False
+        self._log(name, clean, decision, risk=risk, reason="; ".join(approvals), result=result)
         if name == "web_search":
             self.allow_urls_from(result)
         return result, True

@@ -15,11 +15,12 @@ import os
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
-from tool_gate import SPECS, Spec, Match, Str, ToolGate
+from tool_gate import SPECS, AuditLog, Spec, Match, Str, ToolGate
+from tools import AUDIT_LOG, DATA_DIR
 
 mcp = FastMCP(name="ARIA MCP Server")
 
-MEMORY_FILE = Path(__file__).parent / "memory.json"
+MEMORY_FILE = DATA_DIR / "memory.json"
 MAX_MEMORY_KEYS = 100
 
 
@@ -57,7 +58,8 @@ MCP_SPECS = {
 # message (the client drives the loop and approves each call).
 _allow_writes = os.getenv("ARIA_MCP_ALLOW_WRITES") == "1"
 _gate = ToolGate(confirm=(lambda name, args, reason: True) if _allow_writes else None,
-                 budget=None, provenance=False, specs=MCP_SPECS)
+                 budget=None, provenance=False, specs=MCP_SPECS,
+                 audit=AuditLog(AUDIT_LOG, host="mcp"))
 
 
 def _guarded(name: str):

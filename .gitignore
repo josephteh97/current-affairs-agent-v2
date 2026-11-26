@@ -1,0 +1,8 @@
+# Python bytecode caches (any folder, incl. tests/__pycache__/)
+__pycache__/
+
+# Runtime audit log — may contain URLs and queries from your sessions
+logs/
+
+# Container data volume (memory, ratings, audit log)
+data/

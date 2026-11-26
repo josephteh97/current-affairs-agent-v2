@@ -1,0 +1,9 @@
+# ── ARIA — direct dependencies (edit THIS file, not requirements.txt) ─────────
+# Only packages the code actually imports. Pinned to tested versions.
+# mcp: 1.26.0 → 1.30.0 on 2026-11-26 (pip-audit: CVE-2026-59951, -115563, -116684/5/6 + 3 PYSEC IDs).
+# Regenerate the hash-locked requirements.txt after any change:
+#   uv pip compile requirements.in --generate-hashes --universal --python-version 3.10 -o requirements.txt
+# Then review the diff (new packages? changed hashes without a version bump?) before committing.
+
+ddgs==9.11.4    # web_search (DuckDuckGo)
+mcp==1.30.0     # mcp_agent_server.py — FastMCP ships inside this package (mcp.server.fastmcp)

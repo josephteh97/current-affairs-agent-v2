@@ -15,6 +15,7 @@ Usage:
     python agent.py --debug
 """
 
+import hashlib
 import json
 import re
 import sys
@@ -25,11 +26,10 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
-from tools import web_search, get_best_sources  # program-initiated calls only
-from tool_gate import ToolGate, ask_in_terminal, wrap_untrusted  # every model-requested call goes through the gate
+from tools import web_search, get_best_sources, DATA_DIR, AUDIT_LOG  # program-initiated calls only
+from tool_gate import AuditLog, ToolGate, ask_in_terminal, wrap_untrusted  # every model-requested call goes through the gate
 
 # ── Suppress noisy warnings ───────────────────────────────────────────────────
-warnings.filterwarnings("ignore", message=".*duckduckgo_search.*renamed.*ddgs.*", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message=".*renamed to.*ddgs.*", category=RuntimeWarning)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -38,7 +38,8 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL   = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 MAX_TOOL_LOOPS  = 5
 SKILLS_DIR      = Path(__file__).parent / "skills"
-MEMORY_FILE     = Path(__file__).parent / "agent_memory.json"
+SKILLS_LOCK     = Path(__file__).parent / "skills.lock"
+MEMORY_FILE     = DATA_DIR / "agent_memory.json"
 
 # ── Thinking Vocabulary ───────────────────────────────────────────────────────
 # 100 vivid words grouped by agent phase. Each _status() call picks randomly.
@@ -241,12 +242,36 @@ def _load_skills(essay_mode: bool = False) -> str:
     if essay_mode:
         targets.append("essay_writing.md")
 
+    # Skills are injected verbatim into the system prompt, so they are treated as
+    # code: each file must match its SHA-256 in skills.lock (SECURITY.md §7).
+    # Regenerate after reviewing a change: ./run.sh lock-skills
+    try:
+        lock = json.loads(SKILLS_LOCK.read_text())
+    except (OSError, json.JSONDecodeError):
+        _warn_once("skills.lock missing or unreadable — no skills loaded. Run: ./run.sh lock-skills")
+        return ""
+
     parts = []
     for name in targets:
         path = SKILLS_DIR / name
-        if path.exists():
-            parts.append(path.read_text())
+        if not path.exists():
+            continue
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != lock.get(name):
+            _warn_once(f"skills/{name} does not match skills.lock — skipped. "
+                       "Review the change, then run: ./run.sh lock-skills")
+            continue
+        parts.append(data.decode("utf-8"))
     return "\n\n---\n\n".join(parts)
+
+
+_warned = set()
+
+
+def _warn_once(msg: str) -> None:
+    if msg not in _warned:
+        _warned.add(msg)
+        print(f"  ⚠ {msg}", file=sys.stderr)
 
 
 def build_system_prompt(mem: dict, essay_mode: bool = False) -> str:
@@ -438,7 +463,9 @@ def run_agent_turn(
         search_results = web_search(auto_query, num_results=6, mode="auto")
         tools_used.append("web_search")
 
-        gate.allow_urls_from(search_results)  # program-initiated search bypasses gate.call
+        # Program-initiated search bypasses gate.call, so register its URLs and audit it here.
+        gate.allow_urls_from(search_results)
+        gate.record_program_call("web_search", {"query": auto_query}, search_results)
         search_block = wrap_untrusted("web_search", search_results, tag="search_results") + "\n\n"
         if essay_mode:
             pre_context = (
@@ -570,7 +597,8 @@ def main():
 
     model = args.model
     debug = args.debug
-    gate  = ToolGate(confirm=None if args.auto else ask_in_terminal)
+    gate  = ToolGate(confirm=None if args.auto else ask_in_terminal,
+                     audit=AuditLog(AUDIT_LOG, host="cli"))
 
     mem = load_memory()
 

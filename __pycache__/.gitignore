@@ -4,3 +4,5 @@ Screenshot*****.png
 mcp.cpython***.pycWhat
 ***.pyc
 _check***.pyc
+_check.***.pyc
+tests/__pycache__/

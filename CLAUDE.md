@@ -13,10 +13,14 @@ A self-learning current-affairs agent built on a local Ollama LLM (default `llam
 ./run.sh --model llama3.2      # Switch model
 ./run.sh --debug               # Print raw LLM output each ReAct iteration
 ./run.sh mcp                   # Start the MCP server instead
-./run.sh install               # pip install -r requirements.txt
-./run.sh check                 # Verify Python ver, ddgs, fastmcp, sqlite3, Ollama
+./run.sh install               # pip install --require-hashes -r requirements.txt
+./run.sh check                 # Verify Python ver, ddgs, mcp, sqlite3, Ollama, pip-audit, skills.lock
 ./run.sh test                  # Run the security tests in tests/
 ./run.sh --auto                # Non-interactive: deny anything needing approval
+./run.sh lock-skills           # Re-hash skills/*.md into skills.lock (after reviewing changes)
+./run.sh docker [--auto]       # Run in the locked-down container (docker-compose.yml)
+./run.sh docker-test           # Run tests/test_gate.py inside the container
+python audit_report.py         # Summarise logs/audit.jsonl; exits 1 if anything needs review
 ```
 
 In-CLI commands: `clear` (reset conversation, keep learned rules), `memory` (show RL rules + stats), `sources` (show ranked outlets), `model <name>`, `debug`, `help`.
@@ -36,7 +40,7 @@ MCP client ─→ mcp_agent_server.py ─┘
 ### Layers
 
 - **`tools.py`** — All tool functions: `web_search`, `web_fetch`, `write_essay`, plus the four self-learning tools (`rate_source`, `get_best_sources`, `log_writing_feedback`, `recall_writing_feedback`). Owns the SQLite schema (`agent_memory.db`, tables `source_quality` and `writing_feedback`) — created lazily by `_db()` on first use.
-- **`tool_gate.py`** — The only path from a model-requested tool call to `tools.py`. `SPECS` registers each tool with a risk tier (`none`/`read`/`network`/`write`) and per-argument validators; `ToolGate` denies unknown tools/args, enforces per-turn budgets, and requires human approval for `write` tools and for `web_fetch` of URLs not seen this turn (URL provenance: user message + search results). No approver → denied. Tool output reaching the model is wrapped with `wrap_untrusted()`. New tools must be added to `SPECS`, or the model cannot call them. See `SECURITY.md`.
+- **`tool_gate.py`** — The only path from a model-requested tool call to `tools.py`. `SPECS` registers each tool with a risk tier (`none`/`read`/`network`/`write`) and per-argument validators; `ToolGate` denies unknown tools/args, enforces per-turn budgets, and requires human approval for `write` tools and for `web_fetch` of URLs not seen this turn (URL provenance: user message + search results). No approver → denied. Tool output reaching the model is wrapped with `wrap_untrusted()`. Every decision is written by `AuditLog` to `logs/audit.jsonl` (args redacted, results hashed). New tools must be added to `SPECS`, or the model cannot call them. See `SECURITY.md`.
 - **`agent.py`** — Ollama ReAct loop. Three things to know:
   1. **Forced tool use**: `needs_live_search()` keyword-matches against `CURRENT_EVENTS_SIGNALS`; if it hits, `run_agent_turn` calls `web_search` *before* the LLM ever sees the query and injects results as `pre_context`. This bypasses the LLM's format-following for reliability on small models.
   2. **ReAct parser** (`parse_react`) expects `THOUGHT/ACTION/ACTION_INPUT/FINAL_ANSWER`. The stop sequence `OBSERVATION:` prevents the model from hallucinating tool results. JSON parse failures fall back to regex key/value extraction.
@@ -55,7 +59,11 @@ MCP client ─→ mcp_agent_server.py ─┘
 
 ## Conventions
 
+- **State location**: all mutable files (`agent_memory.db`, `agent_memory.json`, `memory.json`, `logs/`) live in `tools.DATA_DIR` (`$ARIA_DATA_DIR`, default: project folder). Never write elsewhere — the container mounts only that directory.
+- **Dependencies**: edit `requirements.in`, then regenerate the hash-locked `requirements.txt` with the `uv pip compile` command in its header. Never hand-edit `requirements.txt`.
+- **Skills are code**: after editing `skills/*.md`, run `./run.sh lock-skills`, or the changed skill is silently skipped at load time.
+
 - Hard rule baked into the system prompt: `write_essay` must NEVER be called unprompted. Search queries get summarised with citations; only explicit essay/report/analysis requests get the essay scaffold.
 - `write_essay` returns a scaffold with `[Agent: ...]` placeholders that the LLM must expand into prose — it is not a finished essay.
-- DuckDuckGo search tries `ddgs.news()` first (better recency), falls back to `ddgs.text()`. The `ddgs` package is preferred; `duckduckgo_search` is the legacy fallback import.
+- DuckDuckGo search tries `ddgs.news()` first (better recency), falls back to `ddgs.text()`. Only the `ddgs` package is used (the legacy `duckduckgo_search` fallback was removed to shrink the dependency surface).
 - Python 3.10+ required (enforced by `run.sh`).

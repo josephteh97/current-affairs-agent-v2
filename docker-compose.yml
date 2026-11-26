@@ -1,0 +1,39 @@
+# Run:   ./run.sh docker                 (interactive CLI; sets uid/gid, creates ./data)
+#        ./run.sh docker --auto          (non-interactive)
+#        ./run.sh docker-test            (run the security tests inside the container)
+#
+# Isolation layers (each one is enough on its own to stop `web_fetch("file:///home/…/.ssh/id_rsa")`,
+# on top of the code-level block in tools.py — defence in depth):
+#   - nothing from your home directory is mounted; only ./data is writable
+#   - root filesystem read-only, runs as your (non-root) uid, all Linux capabilities dropped,
+#     no setuid/setgid binaries in the image, limited memory / processes
+#
+# Why not `security_opt: no-new-privileges`? On AppArmor hosts with newer kernels
+# (verified on Linux 6.17) it makes every exec fail with "operation not permitted"
+# under Docker's default AppArmor profile. Dropping AppArmor to keep it would trade
+# one protection for another; instead the Dockerfile removes all setuid/setgid bits,
+# which closes the same privilege-gain path while AppArmor stays on.
+services:
+  aria:
+    build: .
+    image: aria:local
+    stdin_open: true
+    tty: true
+    # Run as YOUR uid/gid (set by ./run.sh docker) so ./data stays owned by you.
+    # Still unprivileged: no capabilities, read-only rootfs.
+    user: "${ARIA_UID:-1000}:${ARIA_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 1g
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./data:/data            # memory, source ratings, audit log — nothing else
+    environment:
+      ARIA_DATA_DIR: /data
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      # Lets the container reach Ollama on the host. Ollama must listen on the
+      # Docker bridge, not just 127.0.0.1 — see SECURITY.md §4 "Isolation".
+      - "host.docker.internal:host-gateway"
