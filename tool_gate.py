@@ -69,6 +69,23 @@ def Match(pattern: str):
     return check
 
 
+def SearchQuery(max_len: int = 300):
+    """A web_search query leaves the machine (to DuckDuckGo), so it is an
+    outbound channel. Real news queries never need URLs, credentials or long
+    unbroken blobs — those are what smuggled data looks like (SECURITY.md G8)."""
+    base = Str(max_len)
+    def check(v):
+        v = base(v)
+        if _URL_RE.search(v):
+            raise Denied("must not contain URLs (use site:domain.com to scope a search)")
+        if _SECRET_RE.search(v):
+            raise Denied("must not contain credentials or secrets")
+        if any(len(tok) > 40 for tok in v.split()):
+            raise Denied("must not contain tokens longer than 40 characters")
+        return v
+    return check
+
+
 def Choice(*options: str):
     def check(v):
         if v not in options:
@@ -100,7 +117,7 @@ class Spec:
 
 SPECS = {
     "web_search": Spec(tools.web_search, "network", {
-        "query": Str(300), "num_results": Int(1, 10),
+        "query": SearchQuery(300), "num_results": Int(1, 10),
         "mode": Choice("auto", "news", "text"),
     }, required=("query",)),
     "web_fetch": Spec(tools.web_fetch, "network", {

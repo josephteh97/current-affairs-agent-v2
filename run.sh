@@ -198,6 +198,10 @@ cmd_docker_test() {
     docker compose build -q && exec docker compose run --rm -T --entrypoint python aria tests/test_gate.py
 }
 
+cmd_egress_log() {
+    docker compose exec -u proxy egress cat /var/log/squid/access.log
+}
+
 cmd_lock_skills() {
     # Run only after reviewing changes to skills/*.md — this re-trusts their content.
     "$PYTHON" - <<'PY'
@@ -227,6 +231,7 @@ case "${1:-}" in
     lock-skills)      cmd_lock_skills ;;
     docker)           shift; cmd_docker "$@" ;;
     docker-test)      cmd_docker_test ;;
+    egress-log)       cmd_egress_log ;;
     check)            cmd_check ;;
     mcp)              shift; cmd_mcp "$@" ;;
     -h|--help|help)
@@ -242,6 +247,7 @@ case "${1:-}" in
         echo "  ./run.sh lock-skills           Re-hash skills/*.md after reviewing changes"
         echo "  ./run.sh docker [--auto]       Run ARIA in the locked-down container"
         echo "  ./run.sh docker-test           Run the security tests inside the container"
+        echo "  ./run.sh egress-log            Show every outbound request the proxy allowed/denied"
         echo ""
         ;;
     *)                cmd_agent "$@" ;;

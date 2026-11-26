@@ -1,18 +1,22 @@
 # Run:   ./run.sh docker                 (interactive CLI; sets uid/gid, creates ./data)
 #        ./run.sh docker --auto          (non-interactive)
 #        ./run.sh docker-test            (run the security tests inside the container)
+#        ./run.sh egress-log             (every outbound request, allowed or denied)
 #
 # Isolation layers (each one is enough on its own to stop `web_fetch("file:///home/…/.ssh/id_rsa")`,
 # on top of the code-level block in tools.py — defence in depth):
 #   - nothing from your home directory is mounted; only ./data is writable
 #   - root filesystem read-only, runs as your (non-root) uid, all Linux capabilities dropped,
 #     no setuid/setgid binaries in the image, limited memory / processes
+#   - network: `aria` is on an internal network with NO route out. Its only exit is the
+#     `egress` proxy, which allows ports 80/443 to public IPs plus Ollama (egress/squid.conf).
 #
 # Why not `security_opt: no-new-privileges`? On AppArmor hosts with newer kernels
 # (verified on Linux 6.17) it makes every exec fail with "operation not permitted"
 # under Docker's default AppArmor profile. Dropping AppArmor to keep it would trade
 # one protection for another; instead the Dockerfile removes all setuid/setgid bits,
 # which closes the same privilege-gain path while AppArmor stays on.
+
 services:
   aria:
     build: .
@@ -30,10 +34,44 @@ services:
       - /tmp:size=64m,mode=1777
     volumes:
       - ./data:/data            # memory, source ratings, audit log — nothing else
+    networks: [aria_internal]   # no route to the outside world
+    depends_on: [egress]
     environment:
       ARIA_DATA_DIR: /data
+      # Ollama is reached through the proxy, which resolves host.docker.internal.
       OLLAMA_URL: http://host.docker.internal:11434
+      # web_fetch uses ONLY this variable for its proxy (see tools.py).
+      ARIA_EGRESS_PROXY: http://egress:3128
+      # ddgs (web_search) and urllib (Ollama client) read these.
+      DDGS_PROXY: http://egress:3128
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+
+  egress:
+    # Pinned by digest (Squid 6.13). Update deliberately:
+    #   docker buildx imagetools inspect ubuntu/squid:latest
+    image: ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
+    entrypoint: ["squid", "-N", "-f", "/etc/squid/squid.conf"]   # foreground, our config only
+    volumes:
+      - ./egress/squid.conf:/etc/squid/squid.conf:ro
+    read_only: true
+    tmpfs:
+      - /var/log/squid:uid=13,gid=13,mode=0750,size=32m   # uid 13 = squid's `proxy` user
+      - /var/spool/squid:uid=13,gid=13,mode=0750,size=8m
+      - /run:size=1m
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]    # squid starts as root only to drop to the `proxy` user
+    pids_limit: 64
+    mem_limit: 256m
+    networks: [aria_internal, outside]
     extra_hosts:
-      # Lets the container reach Ollama on the host. Ollama must listen on the
-      # Docker bridge, not just 127.0.0.1 — see SECURITY.md §4 "Isolation".
+      # Ollama on the host. It must listen on the Docker bridge, not only 127.0.0.1
+      # — see SECURITY.md §8.
       - "host.docker.internal:host-gateway"
+
+networks:
+  aria_internal:
+    internal: true              # Docker creates no gateway: containers here can't reach out
+  outside: {}

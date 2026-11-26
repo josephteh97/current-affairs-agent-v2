@@ -20,6 +20,7 @@ A self-learning current-affairs agent built on a local Ollama LLM (default `llam
 ./run.sh lock-skills           # Re-hash skills/*.md into skills.lock (after reviewing changes)
 ./run.sh docker [--auto]       # Run in the locked-down container (docker-compose.yml)
 ./run.sh docker-test           # Run tests/test_gate.py inside the container
+./run.sh egress-log            # Every outbound request the container's proxy allowed/denied
 python audit_report.py         # Summarise logs/audit.jsonl; exits 1 if anything needs review
 ```
 
@@ -59,6 +60,7 @@ MCP client ─→ mcp_agent_server.py ─┘
 
 ## Conventions
 
+- **Container networking**: the `aria` service has no route out; all traffic goes through the `egress` Squid proxy (`egress/squid.conf`). `web_fetch` honours only `ARIA_EGRESS_PROXY`, never generic `HTTP(S)_PROXY`. Any new outbound feature must work through that proxy.
 - **State location**: all mutable files (`agent_memory.db`, `agent_memory.json`, `memory.json`, `logs/`) live in `tools.DATA_DIR` (`$ARIA_DATA_DIR`, default: project folder). Never write elsewhere — the container mounts only that directory.
 - **Dependencies**: edit `requirements.in`, then regenerate the hash-locked `requirements.txt` with the `uv pip compile` command in its header. Never hand-edit `requirements.txt`.
 - **Skills are code**: after editing `skills/*.md`, run `./run.sh lock-skills`, or the changed skill is silently skipped at load time.

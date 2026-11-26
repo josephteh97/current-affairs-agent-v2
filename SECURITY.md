@@ -51,7 +51,7 @@ ARIA must reach the public web to search for news, so "no network" is not possib
 
 | Destination | Allowed | By whom |
 |---|---|---|
-| DuckDuckGo (via `ddgs`) | ✅ | `web_search` |
+| Search engines via `ddgs` (a metasearch library: DuckDuckGo, Yahoo, … — observed in the proxy log) | ✅ | `web_search` |
 | Public news sites, `http`/`https`, ports 80/443 | ✅ | `web_fetch` |
 | `localhost:11434` (Ollama) | ✅ | Program code only — never via a tool |
 | Loopback, private (10/8, 172.16/12, 192.168/16), link-local (169.254/16, incl. cloud metadata), IPv6 equivalents | ❌ blocked | — |
@@ -68,6 +68,7 @@ We do not try to judge whether content is "malicious" — that cannot be done re
 - Tool output is wrapped in `<tool_output trusted="false">` (forced search: `<search_results trusted="false">`); a fake closing tag inside the content is escaped, and the system prompt states it is data, never instructions. ✅ This lowers, but does not remove, the chance the model obeys injected text — the code-level rules below are the real defence.
 - **Provenance rule (CLI):** `web_fetch` may only open URLs that appeared in this turn's search results or in the user's message (exact URL, including query string). Any other URL needs human approval; in `--auto` it is denied. ✅ MCP: off — the server never sees the user's message, so the MCP client's per-call approval is the check.
 - Content never causes code execution, package installation, or file access (there are no tools for these). ✅
+- `web_search` queries requested by the model may not contain URLs, credentials, or tokens longer than 40 characters — a query is an outbound channel. ✅
 - Per-turn budget by risk tier (CLI): none 3, read 6, network 6, write 3. ✅
 
 ## 5. Human confirmation — which actions need a person?
@@ -123,9 +124,16 @@ We do not try to judge whether content is "malicious" — that cannot be done re
 | Runs as your non-root uid; all Linux capabilities dropped (`CapEff=0`) | ✅ |
 | No setuid/setgid binaries in the image (replaces `no-new-privileges`, which breaks exec on this AppArmor host) | ✅ |
 | AppArmor `docker-default` enforced; memory 1 GB, 128 processes | ✅ |
-| Network egress limited to ports 80/443 at the network level | ❌ see G7 |
+| Network: `aria` is on an `internal` Docker network — direct connections fail with *Network is unreachable*, DNS doesn't resolve | ✅ |
+| Only exit is the `egress` proxy (Squid 6.13, digest-pinned, `egress/squid.conf`): ports 80/443 to public IPs, plus plain HTTP to Ollama on `host.docker.internal:11434`; private/loopback/link-local/metadata and SSH tunnels denied | ✅ |
+| Proxy logs every request, allowed or denied: `./run.sh egress-log` | ✅ |
 
-Ollama: the container reaches the host via `host.docker.internal`. Ollama listens on `127.0.0.1` by default,
+In container mode `web_fetch` sends traffic through the proxy (`ARIA_EGRESS_PROXY` — the only proxy
+variable it honours), so its connect-time IP check can't apply; the proxy enforces the IP policy instead,
+and proxy refusals are reported and audited as "Blocked by security policy". Scheme, port and redirect
+checks still run in code.
+
+Ollama: the container reaches the host via `host.docker.internal` (through the proxy). Ollama listens on `127.0.0.1` by default,
 which a container cannot reach. Make it listen on the Docker bridge only — **not** `0.0.0.0`, which would expose
 it to your whole network — e.g. `OLLAMA_HOST=172.17.0.1:11434` (Docker's default bridge IP; check with
 `ip addr show docker0`) and point the host CLI at the same address with `OLLAMA_URL`.
@@ -142,7 +150,7 @@ it to your whole network — e.g. `OLLAMA_HOST=172.17.0.1:11434` (Docker's defau
 | ~~G4~~ | ~~`remember_context` keys unvalidated; `learned_rules` persist without review~~ — **fixed** | Exercise 4 ✅ |
 | ~~G5~~ | ~~No audit log~~ — **fixed** (`AuditLog`, `audit_report.py`) | Exercise 7 ✅ |
 | ~~G6~~ | ~~`requirements.txt` uses `>=` ranges, no hashes; skills not hash-locked~~ — **fixed** | Exercise 5 ✅ |
-| G7 | Container egress is not restricted at the network level (only by `web_fetch`'s code-level policy). Needs an egress proxy or firewall rules allowing 80/443 + the Ollama port only. | Open |
-| G8 | `web_search` queries go to DuckDuckGo unfiltered — injected text could place data in a query. Low risk (not an attacker-controlled server). | Accepted |
+| ~~G7~~ | ~~Container egress is not restricted at the network level~~ — **fixed**: internal network + `egress` proxy | ✅ |
+| G8 | `web_search` queries leave the machine (to several search engines). **Mitigated**: the gate rejects queries containing URLs, secrets, or tokens > 40 chars (`SearchQuery`). **Residual, accepted**: short plain-text data could still be phrased as a query; the engines are not attacker-controlled, and in the container nothing secret is reachable to leak. | Mitigated |
 
 Update a row's status to ✅ only when the corresponding test passes. Run them with `./run.sh test` (`tests/`).

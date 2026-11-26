@@ -12,11 +12,13 @@ import os
 import re
 import socket
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
 from contextlib import closing
 from pathlib import Path
+from typing import Optional
 
 # All mutable state (memory, DBs, logs) lives in DATA_DIR, so the code directory
 # can be read-only (e.g. in a container). Defaults to the project folder.
@@ -200,11 +202,25 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     # (the IP of the redirect target is checked again at connect time)
 
 
+# Egress proxy (container mode, SECURITY.md §8). Set ONLY via ARIA_EGRESS_PROXY,
+# never the generic HTTP(S)_PROXY variables, so a stray proxy setting can't
+# silently switch off the connect-time IP check.
+EGRESS_PROXY = os.getenv("ARIA_EGRESS_PROXY") or None
+
+
 def _build_safe_opener() -> urllib.request.OpenerDirector:
     # Built by hand instead of build_opener(): no FileHandler, FTPHandler,
-    # DataHandler, and no ProxyHandler (an env proxy would bypass the IP check).
+    # DataHandler, and no implicit env-proxy handling.
     opener = urllib.request.OpenerDirector()
-    for h in (_SafeHTTPHandler(), _SafeHTTPSHandler(), _SafeRedirectHandler(),
+    if EGRESS_PROXY:
+        # Every connection goes to the proxy, whose own IP is private, so the
+        # connect-time IP check can't apply here. The proxy enforces the IP
+        # policy instead (egress/squid.conf); scheme/port/redirect checks stay.
+        handlers = (urllib.request.ProxyHandler({"http": EGRESS_PROXY, "https": EGRESS_PROXY}),
+                    urllib.request.HTTPHandler(), urllib.request.HTTPSHandler())
+    else:
+        handlers = (_SafeHTTPHandler(), _SafeHTTPSHandler())
+    for h in (*handlers, _SafeRedirectHandler(),
               urllib.request.HTTPDefaultErrorHandler(),
               urllib.request.HTTPErrorProcessor()):
         opener.add_handler(h)
@@ -212,6 +228,18 @@ def _build_safe_opener() -> urllib.request.OpenerDirector:
 
 
 _SAFE_OPENER = _build_safe_opener()
+
+
+def _proxy_denial(e: Exception) -> Optional[str]:
+    """Recognise a refusal by the egress proxy, so it is reported (and audited)
+    as 'Blocked', like the in-code checks."""
+    if not EGRESS_PROXY:
+        return None
+    if isinstance(e, urllib.error.HTTPError) and "ERR_ACCESS_DENIED" in (e.headers.get("X-Squid-Error") or ""):
+        return "egress proxy denied the destination"
+    if "Tunnel connection failed: 403" in str(e):
+        return "egress proxy denied the tunnel"
+    return None
 
 
 def web_fetch(url: str, timeout: int = 15) -> str:
@@ -242,6 +270,9 @@ def web_fetch(url: str, timeout: int = 15) -> str:
     except BlockedURL as e:
         return f"Blocked by security policy: {e}"
     except Exception as e:
+        denial = _proxy_denial(e)
+        if denial:
+            return f"Blocked by security policy: {denial}"
         return f"Fetch error for {url}: {e}"
 
 # ── Writing tools ─────────────────────────────────────────────────────────────
