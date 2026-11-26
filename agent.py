@@ -25,11 +25,8 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
-from tools import (
-    web_search, web_fetch, write_essay,
-    rate_source, get_best_sources,
-    log_writing_feedback, recall_writing_feedback,
-)
+from tools import web_search, get_best_sources  # program-initiated calls only
+from tool_gate import ToolGate, ask_in_terminal   # every model-requested call goes through the gate
 
 # ── Suppress noisy warnings ───────────────────────────────────────────────────
 warnings.filterwarnings("ignore", message=".*duckduckgo_search.*renamed.*ddgs.*", category=RuntimeWarning)
@@ -116,15 +113,6 @@ CURRENT_EVENTS_SIGNALS = [
     "said today", "trump", "biden", "xi", "putin", "modi",
 ]
 
-TOOLS = {
-    "web_search":              {"fn": web_search,              "args": ["query", "num_results", "mode"]},
-    "web_fetch":               {"fn": web_fetch,               "args": ["url"]},
-    "write_essay":             {"fn": write_essay,             "args": ["topic", "thesis", "key_arguments", "evidence", "counterargument", "style"]},
-    "rate_source":             {"fn": rate_source,             "args": ["source_name", "quality", "reason", "topic_tag"]},
-    "get_best_sources":        {"fn": get_best_sources,        "args": ["topic_tag", "limit"]},
-    "log_writing_feedback":    {"fn": log_writing_feedback,    "args": ["component", "feedback", "sentiment", "content_snippet", "topic_tag"]},
-    "recall_writing_feedback": {"fn": recall_writing_feedback, "args": ["component", "limit"]},
-}
 
 # ── Intent Detection ──────────────────────────────────────────────────────────
 
@@ -416,6 +404,7 @@ def run_agent_turn(
     user_input: str,
     conversation: list,
     model: str,
+    gate: ToolGate,
     debug: bool = False,
 ) -> tuple[str, list]:
     """
@@ -428,6 +417,7 @@ def run_agent_turn(
     """
     tools_used = []
     pre_context = ""
+    gate.new_turn()
     essay_mode  = is_essay_request(user_input)
 
     # ── Step 1: Forced web search for current-events queries ──────────────────
@@ -494,21 +484,15 @@ def run_agent_turn(
                 "log_writing_feedback":    "remembering",
                 "recall_writing_feedback": "remembering",
             }.get(tool_name, "thinking")
-            _tool_detail = (tool_args.get("query") or
-                            tool_args.get("url", "")[:60] or
-                            tool_args.get("topic", ""))
+            _tool_detail = str(tool_args.get("query") or tool_args.get("url") or
+                               tool_args.get("topic") or "")[:60]
             _status(_tool_phase, _tool_detail)
 
-            if tool_name in TOOLS:
-                try:
-                    observation = TOOLS[tool_name]["fn"](**tool_args)
-                    tools_used.append(tool_name)
-                except TypeError as e:
-                    observation = f"Bad arguments for {tool_name}: {e}"
-                except Exception as e:
-                    observation = f"Tool error: {e}"
-            else:
-                observation = f"Unknown tool '{tool_name}'. Available: {list(TOOLS.keys())}"
+            observation, ran = gate.call(tool_name, tool_args)
+            if ran:
+                tools_used.append(tool_name)
+            elif debug:
+                print(f"  [gate] {observation}")
 
             loop_messages.append({"role": "assistant", "content": raw})
             loop_messages.append({
@@ -567,10 +551,13 @@ def main():
     parser = argparse.ArgumentParser(description="ARIA Agentic AI")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--auto", action="store_true",
+                        help="non-interactive: deny tool calls that need approval instead of asking")
     args = parser.parse_args()
 
     model = args.model
     debug = args.debug
+    gate  = ToolGate(confirm=None if args.auto else ask_in_terminal)
 
     mem = load_memory()
 
@@ -643,7 +630,7 @@ def main():
             continue
 
         try:
-            response, tools_used = run_agent_turn(user_input, conversation, model, debug)
+            response, tools_used = run_agent_turn(user_input, conversation, model, gate, debug)
             print(f"\nARIA: {response}")
 
             result = evaluate_turn(user_input, response, tools_used, mem)

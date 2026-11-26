@@ -34,6 +34,7 @@ MCP client ─→ mcp_agent_server.py ─┘
 ### Layers
 
 - **`tools.py`** — All tool functions: `web_search`, `web_fetch`, `write_essay`, plus the four self-learning tools (`rate_source`, `get_best_sources`, `log_writing_feedback`, `recall_writing_feedback`). Owns the SQLite schema (`agent_memory.db`, tables `source_quality` and `writing_feedback`) — created lazily by `_db()` on first use.
+- **`tool_gate.py`** — The only path from a model-requested tool call to `tools.py`. `SPECS` registers each tool with a risk tier (`none`/`read`/`network`/`write`) and per-argument validators; `ToolGate` denies unknown tools/args, enforces per-turn budgets, and requires human approval for `write` tools (none available → denied). New tools must be added to `SPECS`, or the model cannot call them. See `SECURITY.md`.
 - **`agent.py`** — Ollama ReAct loop. Three things to know:
   1. **Forced tool use**: `needs_live_search()` keyword-matches against `CURRENT_EVENTS_SIGNALS`; if it hits, `run_agent_turn` calls `web_search` *before* the LLM ever sees the query and injects results as `pre_context`. This bypasses the LLM's format-following for reliability on small models.
   2. **ReAct parser** (`parse_react`) expects `THOUGHT/ACTION/ACTION_INPUT/FINAL_ANSWER`. The stop sequence `OBSERVATION:` prevents the model from hallucinating tool results. JSON parse failures fall back to regex key/value extraction.

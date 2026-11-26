@@ -20,13 +20,14 @@ or plugin may be added without updating this table and review.
 | `write_essay` | none | Returns a text scaffold | ✅ |
 | `get_best_sources` | read | Reads `agent_memory.db` | ✅ |
 | `recall_writing_feedback` | read | Reads `agent_memory.db` | ✅ |
-| `rate_source` | write | Writes `agent_memory.db` | ❌ see G3 |
-| `log_writing_feedback` | write | Writes `agent_memory.db` | ❌ see G3 |
+| `rate_source` | write | Writes `agent_memory.db` | ✅ |
+| `log_writing_feedback` | write | Writes `agent_memory.db` | ✅ |
 | `remember_context` (MCP only) | write | Writes `memory.md` | ❌ see G4 |
 
 Rules:
-- Unknown tool names and unknown arguments are rejected. ❌ see G3
-- Argument values are validated (types, ranges, lengths). ❌ see G3
+All model-requested calls go through `tool_gate.py` (`ToolGate`), shared by the CLI and MCP server.
+- Unknown tool names and unknown arguments are rejected. ✅
+- Argument values are validated (types, ranges, lengths, allowed values). ✅
 - No tool may execute code, run shell commands, or install packages. ✅
 
 ## 2. Files — what can ARIA access?
@@ -67,7 +68,7 @@ We do not try to judge whether content is "malicious" — that cannot be done re
 - Tool output is wrapped in `<tool_output trusted="false">` and the system prompt states it is data, never instructions. ❌ see G2
 - **Provenance rule:** `web_fetch` may only open URLs that appeared in this turn's search results or were typed by the user. Any other URL is denied. ❌ see G2
 - Content never causes code execution, package installation, or file access (there are no tools for these). ✅
-- Per-turn budget: at most 5 `web_fetch` calls. ❌ see G3
+- Per-turn budget by risk tier (CLI): none 3, read 6, network 6, write 3. ✅
 
 ## 5. Human confirmation — which actions need a person?
 
@@ -75,9 +76,10 @@ We do not try to judge whether content is "malicious" — that cannot be done re
 |---|---|
 | Reading/writing arbitrary local files | **Denied** — not confirmable, no tool exists |
 | `web_fetch` of a URL outside the provenance rule | Denied (CLI may offer a y/N prompt) |
-| `rate_source`, `log_writing_feedback`, `remember_context` | Confirm before writing (persistent state) |
+| `rate_source`, `log_writing_feedback` | CLI: confirm with y/N before writing ✅. MCP: denied unless `ARIA_MCP_ALLOW_WRITES=1`, which delegates approval to the MCP client's per-call prompt ✅ |
+| `remember_context` (MCP) | Not yet gated ❌ see G4 |
 | Adding a new entry to `learned_rules` derived from model/tool text | Confirm before saving |
-| Non-interactive mode (`--auto`) | Anything requiring confirmation is **denied**, never auto-approved |
+| Non-interactive mode (`--auto`) | Anything requiring confirmation is **denied**, never auto-approved ✅ |
 
 ## 6. Audit and cleanup
 
@@ -113,7 +115,7 @@ Review weekly, or immediately after anything unexpected: look for denied calls, 
 |---|---|---|
 | ~~G1~~ | ~~`web_fetch` accepts any URL, including `file://` and private IPs~~ — **fixed** (Exercise 1) | Exercise 1 ✅ |
 | G2 | Tool output is not tagged as untrusted; no provenance rule for `web_fetch` | Exercise 2 |
-| G3 | Dispatch passes `**tool_args` unchecked; no risk tiers, confirmation, or budget | Exercise 3 |
+| ~~G3~~ | ~~Dispatch passes `**tool_args` unchecked; no risk tiers, confirmation, or budget~~ — **fixed** (`tool_gate.py`) | Exercise 3 ✅ |
 | G4 | `remember_context` keys unvalidated; `learned_rules` persist without review | Exercise 4 |
 | G5 | No audit log | Exercise 7 |
 | G6 | `requirements.txt` uses `>=` ranges, no hashes; skills not hash-locked | Exercise 5 |

@@ -5,8 +5,14 @@ Both agent.py (Ollama ReAct loop) and mcp_agent_server.py (MCP server)
 import from here. Fix a bug once; both consumers get the fix.
 """
 
+import html
+import http.client
+import ipaddress
 import re
+import socket
 import sqlite3
+import urllib.parse
+import urllib.request
 import warnings
 from contextlib import closing
 from pathlib import Path
@@ -93,12 +99,6 @@ def web_search(query: str, num_results: int = 10, mode: str = "auto") -> str:
 # (b) DNS rebinding can't swap a public IP for 127.0.0.1 between check and use,
 # because we connect to the exact IP we validated.
 
-import http.client
-import ipaddress
-import socket
-import urllib.parse
-import urllib.request
-
 _ALLOWED_SCHEMES = {"http", "https"}
 _ALLOWED_PORTS = {80, 443}
 _MAX_BYTES = 2_000_000
@@ -110,13 +110,16 @@ class BlockedURL(Exception):
 
 
 def _check_scheme_and_port(url: str) -> None:
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme.lower() not in _ALLOWED_SCHEMES:
+    """URL-level pre-check. The connect-time check in _safe_create_connection is
+    the real enforcement; this one exists so that malformed URLs and non-HTTP
+    schemes (which never reach a socket) also get a uniform 'Blocked' result."""
+    parts = urllib.parse.urlsplit(url)  # urlsplit lowercases the scheme
+    if parts.scheme not in _ALLOWED_SCHEMES:
         raise BlockedURL(f"scheme '{parts.scheme}' not allowed")
     if not parts.hostname:
         raise BlockedURL("no hostname")
     try:
-        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
     except ValueError:
         raise BlockedURL("invalid port")
     if port not in _ALLOWED_PORTS:
@@ -129,9 +132,8 @@ def _is_public(ip: ipaddress._BaseAddress) -> bool:
     return ip.is_global and not ip.is_multicast  # excludes loopback/private/link-local/reserved
 
 
-def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                            source_address=None, *args, **kwargs):
-    """Drop-in for socket.create_connection that refuses non-public IPs."""
+def _safe_create_connection(address, timeout, source_address=None):
+    """Replacement for socket.create_connection that refuses non-public IPs."""
     host, port = address
     if port not in _ALLOWED_PORTS:
         raise BlockedURL(f"port {port} not allowed")
@@ -143,21 +145,31 @@ def _safe_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
     bad = [str(ip) for ip in ips if not _is_public(ip)]
     if bad:  # any non-public answer → refuse the host entirely
         raise BlockedURL(f"{host} resolves to non-public address {bad[0]}")
-    # Connect to the IP we just validated — never re-resolve the name.
-    return socket.create_connection((str(ips[0]), port), timeout, source_address)
+    # Connect only to IPs we just validated — never re-resolve the name.
+    # Try each in turn (like socket.create_connection) so a dead IPv6 route
+    # falls through to IPv4 instead of failing.
+    last_err = None
+    for ip in dict.fromkeys(str(ip) for ip in ips):
+        try:
+            return socket.create_connection((ip, port), timeout, source_address)
+        except OSError as e:
+            last_err = e
+    raise last_err
 
 
-class _SafeHTTPConnection(http.client.HTTPConnection):
+class _SafeConnMixin:
+    # Set per-instance because the base __init__ assigns _create_connection itself.
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._create_connection = _safe_create_connection
 
 
-class _SafeHTTPSConnection(http.client.HTTPSConnection):
-    # TLS still verifies the certificate against the original hostname.
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self._create_connection = _safe_create_connection
+class _SafeHTTPConnection(_SafeConnMixin, http.client.HTTPConnection):
+    pass
+
+
+class _SafeHTTPSConnection(_SafeConnMixin, http.client.HTTPSConnection):
+    pass  # TLS still verifies the certificate against the original hostname.
 
 
 class _SafeHTTPHandler(urllib.request.HTTPHandler):
@@ -173,9 +185,12 @@ class _SafeHTTPSHandler(urllib.request.HTTPSHandler):
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     max_redirections = _MAX_REDIRECTS
 
+    # Overrides http_error_302 rather than redirect_request: urllib rejects
+    # non-HTTP schemes (e.g. file://) *before* calling redirect_request, which
+    # would surface as a generic HTTPError instead of a uniform "Blocked".
     def http_error_302(self, req, fp, code, msg, headers):
         location = headers.get("location") or headers.get("uri")
-        if location:  # check before urllib's own handling, so refusals are uniform
+        if location:
             _check_scheme_and_port(urllib.parse.urljoin(req.full_url, location))
         return super().http_error_302(req, fp, code, msg, headers)
 
@@ -203,8 +218,6 @@ def web_fetch(url: str, timeout: int = 15) -> str:
     Only public http/https pages on ports 80/443 are allowed.
     """
     try:
-        import html as _html
-
         _check_scheme_and_port(url)
         headers = {"User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -216,9 +229,9 @@ def web_fetch(url: str, timeout: int = 15) -> str:
 
         raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw, flags=re.DOTALL | re.IGNORECASE)
         title_m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
-        title = _html.unescape(title_m.group(1).strip()) if title_m else "No title"
+        title = html.unescape(title_m.group(1).strip()) if title_m else "No title"
         text = re.sub(r"<[^>]+>", " ", raw)
-        text = _html.unescape(text)
+        text = html.unescape(text)
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         if len(text) > 8000:

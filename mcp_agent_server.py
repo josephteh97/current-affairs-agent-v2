@@ -9,33 +9,35 @@ All tool logic lives in tools.py — this file only handles MCP registration.
 Run: ./run.sh mcp   OR   python mcp_agent_server.py
 """
 
+import functools
 import os
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
-from tools import (
-    web_search,
-    web_fetch,
-    write_essay,
-    rate_source,
-    get_best_sources,
-    log_writing_feedback,
-    recall_writing_feedback,
-)
+from tool_gate import SPECS, ToolGate
 
 mcp = FastMCP(name="ARIA MCP Server")
 
-# Register all shared tools
-for _fn in [
-    web_search,
-    web_fetch,
-    write_essay,
-    rate_source,
-    get_best_sources,
-    log_writing_feedback,
-    recall_writing_feedback,
-]:
-    mcp.tool()(_fn)
+# The MCP server has no terminal to ask in, so write tools are denied unless the
+# operator opts in with ARIA_MCP_ALLOW_WRITES=1 — in that case the MCP client's
+# own per-call approval prompt is the human check. No per-turn budget: MCP has
+# no notion of a turn (the client drives the loop).
+_allow_writes = os.getenv("ARIA_MCP_ALLOW_WRITES") == "1"
+_gate = ToolGate(confirm=(lambda name, args: True) if _allow_writes else None, budget=None)
+
+
+def _guarded(name: str):
+    fn = SPECS[name].fn
+
+    @functools.wraps(fn)  # keeps the signature, so FastMCP builds the same schema
+    def wrapper(**kwargs):
+        return _gate.call(name, kwargs)[0]
+    return wrapper
+
+
+# Register every shared tool through the gate
+for _name in SPECS:
+    mcp.tool()(_guarded(_name))
 
 
 # ── MCP-only tool: remember_context ──────────────────────────────────────────
