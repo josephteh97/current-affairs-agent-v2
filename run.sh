@@ -157,9 +157,19 @@ cmd_agent() {
     exec "$PYTHON" agent.py "$@"
 }
 
+cmd_test() {
+    local rc=0
+    for t in tests/test_*.py; do
+        echo ""; echo "=== $t ==="
+        "$PYTHON" "$t" 2>/dev/null || rc=1
+    done
+    exit $rc
+}
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 case "${1:-}" in
     install)          cmd_install ;;
+    test)             cmd_test ;;
     check)            cmd_check ;;
     mcp)              shift; cmd_mcp "$@" ;;
     -h|--help|help)
@@ -171,6 +181,7 @@ case "${1:-}" in
         echo "  ./run.sh mcp                   Start the MCP tool server"
         echo "  ./run.sh install               Install Python dependencies"
         echo "  ./run.sh check                 Check all dependencies"
+        echo "  ./run.sh test                  Run the security tests (tests/)"
         echo ""
         ;;
     *)                cmd_agent "$@" ;;

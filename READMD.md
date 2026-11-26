@@ -73,7 +73,7 @@ On file organization:
       subgraph MCP["mcp_agent_server.py  —  MCP Tool Server"]                                                                                                                                                    
           direction TB
           M1["FastMCP\nmcp.tool() registration"]                                                                                                                                                                 
-          M2["remember_context()\nMCP-only key-value store\n(memory.md)"]                                                                                                                                        
+          M2["remember_context()\nMCP-only key-value store\n(memory.json)"]                                                                                                                                        
           M1 --- M2                                                                                                                                                                                              
       end                                                                                                                                                                                                        
                                                                                                                                                                                                                  

@@ -22,7 +22,7 @@ or plugin may be added without updating this table and review.
 | `recall_writing_feedback` | read | Reads `agent_memory.db` | ✅ |
 | `rate_source` | write | Writes `agent_memory.db` | ✅ |
 | `log_writing_feedback` | write | Writes `agent_memory.db` | ✅ |
-| `remember_context` (MCP only) | write | Writes `memory.md` | ❌ see G4 |
+| `remember_context` (MCP only) | write | Writes `memory.json` (key `[a-z0-9_]{1,40}`, value ≤ 2000 chars, ≤ 100 keys) | ✅ |
 
 Rules:
 All model-requested calls go through `tool_gate.py` (`ToolGate`), shared by the CLI and MCP server.
@@ -39,7 +39,7 @@ chosen by code, never by a model-supplied argument:
 |---|---|---|
 | `agent_memory.db` | read/write | Source ratings, writing feedback |
 | `agent_memory.json` | read/write | Learned rules, stats (CLI only) |
-| `memory.md` | read/write | MCP key-value memory |
+| `memory.json` | read/write | MCP key-value memory |
 | `skills/*.md` | read | Prompt playbooks |
 
 Everything else — home directory, `~/.ssh`, `.env`, credentials, system files — is out of scope.
@@ -65,8 +65,8 @@ so every redirect hop is checked too. Environment proxies are ignored. Responses
 **All** tool output (search results, fetched pages, stored memory) is untrusted, regardless of source.
 We do not try to judge whether content is "malicious" — that cannot be done reliably. Instead:
 
-- Tool output is wrapped in `<tool_output trusted="false">` and the system prompt states it is data, never instructions. ❌ see G2
-- **Provenance rule:** `web_fetch` may only open URLs that appeared in this turn's search results or were typed by the user. Any other URL is denied. ❌ see G2
+- Tool output is wrapped in `<tool_output trusted="false">` (forced search: `<search_results trusted="false">`); a fake closing tag inside the content is escaped, and the system prompt states it is data, never instructions. ✅ This lowers, but does not remove, the chance the model obeys injected text — the code-level rules below are the real defence.
+- **Provenance rule (CLI):** `web_fetch` may only open URLs that appeared in this turn's search results or in the user's message (exact URL, including query string). Any other URL needs human approval; in `--auto` it is denied. ✅ MCP: off — the server never sees the user's message, so the MCP client's per-call approval is the check.
 - Content never causes code execution, package installation, or file access (there are no tools for these). ✅
 - Per-turn budget by risk tier (CLI): none 3, read 6, network 6, write 3. ✅
 
@@ -75,10 +75,10 @@ We do not try to judge whether content is "malicious" — that cannot be done re
 | Action | Policy |
 |---|---|
 | Reading/writing arbitrary local files | **Denied** — not confirmable, no tool exists |
-| `web_fetch` of a URL outside the provenance rule | Denied (CLI may offer a y/N prompt) |
+| `web_fetch` of a URL outside the provenance rule | CLI: y/N prompt explaining why ✅. `--auto`: denied ✅ |
 | `rate_source`, `log_writing_feedback` | CLI: confirm with y/N before writing ✅. MCP: denied unless `ARIA_MCP_ALLOW_WRITES=1`, which delegates approval to the MCP client's per-call prompt ✅ |
-| `remember_context` (MCP) | Not yet gated ❌ see G4 |
-| Adding a new entry to `learned_rules` derived from model/tool text | Confirm before saving |
+| `remember_context` (MCP) | Same as other write tools: denied unless `ARIA_MCP_ALLOW_WRITES=1` ✅ |
+| `learned_rules` (injected into every future system prompt) | Only fixed, code-authored lessons (`KNOWN_LESSONS` in `agent.py`) can be stored **or** shown; anything else — including text edited into `agent_memory.json` — is ignored ✅ |
 | Non-interactive mode (`--auto`) | Anything requiring confirmation is **denied**, never auto-approved ✅ |
 
 ## 6. Audit and cleanup
@@ -96,7 +96,7 @@ Review weekly, or immediately after anything unexpected: look for denied calls, 
 
 **Cleanup after a suspected incident:**
 1. Stop ARIA and the MCP server.
-2. Back up then inspect `agent_memory.json` (`learned_rules`), `agent_memory.db`, `memory.md` for injected content; delete bad entries or reset the files.
+2. Back up then inspect `agent_memory.json` (`learned_rules`), `agent_memory.db`, `memory.json` for injected content; delete bad entries or reset the files.
 3. Review `logs/audit.jsonl` for unexpected hosts or file URLs.
 4. Verify `skills/*.md` against `skills.lock` hashes. ❌ see G6
 5. If anything may have been read from disk, rotate the relevant credentials (SSH keys, tokens).
@@ -114,10 +114,10 @@ Review weekly, or immediately after anything unexpected: look for denied calls, 
 | ID | Gap | Fixed by |
 |---|---|---|
 | ~~G1~~ | ~~`web_fetch` accepts any URL, including `file://` and private IPs~~ — **fixed** (Exercise 1) | Exercise 1 ✅ |
-| G2 | Tool output is not tagged as untrusted; no provenance rule for `web_fetch` | Exercise 2 |
+| ~~G2~~ | ~~Tool output is not tagged as untrusted; no provenance rule for `web_fetch`~~ — **fixed** | Exercise 2 ✅ |
 | ~~G3~~ | ~~Dispatch passes `**tool_args` unchecked; no risk tiers, confirmation, or budget~~ — **fixed** (`tool_gate.py`) | Exercise 3 ✅ |
-| G4 | `remember_context` keys unvalidated; `learned_rules` persist without review | Exercise 4 |
+| ~~G4~~ | ~~`remember_context` keys unvalidated; `learned_rules` persist without review~~ — **fixed** | Exercise 4 ✅ |
 | G5 | No audit log | Exercise 7 |
 | G6 | `requirements.txt` uses `>=` ranges, no hashes; skills not hash-locked | Exercise 5 |
 
-Update a row's status to ✅ only when the corresponding test passes.
+Update a row's status to ✅ only when the corresponding test passes. Run them with `./run.sh test` (`tests/`).
